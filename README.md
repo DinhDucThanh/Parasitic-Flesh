@@ -1,20 +1,41 @@
 # PARASITIC FLESH
 
+[![CI](https://github.com/DinhDucThanh/Parasitic-Flesh/actions/workflows/ci.yml/badge.svg)](https://github.com/DinhDucThanh/Parasitic-Flesh/actions/workflows/ci.yml)
+
 A single-room, top-down body-horror action roguelite prototype built on Vite + TypeScript + HTML5 Canvas.
 Everything you see and hear is generated in code: there are **no required image or audio files**, and no runtime dependencies.
 
 You are a one-hit-point spore. Slow time, aim a leap, **hijack a body**, wear out its lifespan, and detonate it on the way out.
 
-## Run
+## Setup
 
-Requires Node.js 18 or newer.
+Requires Node.js 20 or newer (CI runs Node 20).
 
 ```bash
+git clone https://github.com/DinhDucThanh/Parasitic-Flesh.git
+cd Parasitic-Flesh
 npm install
-npm run dev      # http://localhost:5173
-npm run build    # strict typecheck + production build into dist/
-npm run preview  # serve the production build
 ```
+
+Run telemetry is optional. To write finished runs to Supabase, copy the template and fill in your
+project's URL and publishable key. Without `.env` the game runs normally and skips reporting.
+
+```bash
+cp .env.example .env
+# VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+# VITE_SUPABASE_ANON_KEY=<publishable key>
+```
+
+```bash
+npm run dev        # http://localhost:5173
+npm run typecheck  # strict TypeScript, no emit
+npm run build      # typecheck + production build into dist/
+npm run preview    # serve the production build
+```
+
+Every push runs the same typecheck and build in GitHub Actions. Telemetry inserts into
+`player_runs`, which allows `anon` inserts only — the publishable key can write runs but cannot
+read other players' data. Set the two variables in your hosting provider for deployed builds.
 
 ## Controls
 
