@@ -1,0 +1,2 @@
+# Drop optional WAV/OGG overrides here. Keys are documented in
+# src/assets/AssetRegistry.ts. Missing files fall back to the Web Audio synth.

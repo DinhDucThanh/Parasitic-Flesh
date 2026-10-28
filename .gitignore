@@ -1,0 +1,15 @@
+node_modules/
+dist/
+screenshots/
+*.local
+.DS_Store
+
+# Local environment (never commit real keys)
+.env
+.env.*
+!.env.example
+
+# Local run artifacts
+*.pid
+dev.log
+.freebuff/
