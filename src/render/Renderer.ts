@@ -877,7 +877,7 @@ export class Renderer {
         countColor = "#ff5a5a";
       } else {
         countLabel = "CHAMBER";
-        countValue = `${String(tutorial.phase + 1).padStart(2, "0")} / 05`;
+        countValue = `${String(tutorial.phase + 1).padStart(2, "0")} / 07`;
         countColor = "#8dffca";
       }
     }
