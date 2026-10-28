@@ -1,6 +1,7 @@
 node_modules/
 dist/
-screenshots/
+/screenshots/
+docs/screenshots/*.tmp
 *.local
 .DS_Store
 

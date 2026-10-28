@@ -7,6 +7,14 @@ Everything you see and hear is generated in code: there are **no required image 
 
 You are a one-hit-point spore. Slow time, aim a leap, **hijack a body**, wear out its lifespan, and detonate it on the way out.
 
+## Screenshots
+
+| The Proving Ground | Live containment |
+| --- | --- |
+| ![Chamber one of the tutorial: evade the conduits and reach the sensor pad](docs/screenshots/tutorial-awakening.png) | ![A possessed security guard fighting through Sector 1](docs/screenshots/sector-combat.png) |
+
+![The Bio-Terminal specimen archive](docs/screenshots/codex-specimens.png)
+
 ## Setup
 
 Requires Node.js 20 or newer (CI runs Node 20).
