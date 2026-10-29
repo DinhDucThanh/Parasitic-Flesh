@@ -1,7 +1,7 @@
 import type { Vec2 } from "../core/math";
 
 export type Team = "player" | "enemy";
-export type ProjectileKind = "rifle" | "pellet" | "sidearm";
+export type ProjectileKind = "rifle" | "pellet";
 
 export class Projectile {
   readonly position: Vec2;

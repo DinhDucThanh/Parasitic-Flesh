@@ -24,20 +24,29 @@ function mulberry32(seed: number): () => number {
 export class DecalSystem {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
+  private width: number = ARENA.width;
+  private height: number = ARENA.height;
 
   constructor() {
     this.canvas = document.createElement("canvas");
-    this.canvas.width = ARENA.width;
-    this.canvas.height = ARENA.height;
+    this.canvas.width = this.width;
+    this.canvas.height = this.height;
     const ctx = this.canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
     this.ctx = ctx;
     this.bakeFloor("standard");
   }
 
-  /** Wipe all gore and repaint the base floor for the selected level. */
-  reset(mode: "standard" | "tutorial" = "standard"): void {
-    this.bakeFloor(mode);
+  /** Wipe all gore and repaint the base floor, resizing for the selected level. */
+  reset(mode: "standard" | "tutorial" = "standard", width: number = ARENA.width, height: number = ARENA.height, transparent = false): void {
+    if (width !== this.width || height !== this.height) {
+      this.width = width;
+      this.height = height;
+      this.canvas.width = width;
+      this.canvas.height = height;
+    }
+    if (transparent) this.ctx.clearRect(0, 0, this.width, this.height);
+    else this.bakeFloor(mode);
   }
 
   draw(ctx: CanvasRenderingContext2D): void {
@@ -156,14 +165,14 @@ export class DecalSystem {
     const ctx = this.ctx;
     const random = mulberry32(0x5eed);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, ARENA.width, ARENA.height);
+    ctx.clearRect(0, 0, this.width, this.height);
     ctx.fillStyle = COLORS.floorDark;
-    ctx.fillRect(0, 0, ARENA.width, ARENA.height);
+    ctx.fillRect(0, 0, this.width, this.height);
 
     const tile = 100;
     // Metal plate variation
-    for (let y = 0; y < ARENA.height; y += tile) {
-      for (let x = 0; x < ARENA.width; x += tile) {
+    for (let y = 0; y < this.height; y += tile) {
+      for (let x = 0; x < this.width; x += tile) {
         const shade = random();
         ctx.fillStyle = shade > 0.7 ? COLORS.floorLight : shade > 0.35 ? "#1d242d" : COLORS.floorDark;
         ctx.fillRect(x, y, tile, tile);
@@ -189,23 +198,23 @@ export class DecalSystem {
     ctx.strokeStyle = COLORS.grid;
     ctx.lineWidth = 2;
     ctx.globalAlpha = 0.55;
-    for (let x = tile; x < ARENA.width; x += tile) {
+    for (let x = tile; x < this.width; x += tile) {
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
-      ctx.lineTo(x + 0.5, ARENA.height);
+      ctx.lineTo(x + 0.5, this.height);
       ctx.stroke();
     }
-    for (let y = tile; y < ARENA.height; y += tile) {
+    for (let y = tile; y < this.height; y += tile) {
       ctx.beginPath();
       ctx.moveTo(0, y + 0.5);
-      ctx.lineTo(ARENA.width, y + 0.5);
+      ctx.lineTo(this.width, y + 0.5);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
     // Rivets
-    for (let y = 50; y < ARENA.height; y += 100) {
-      for (let x = 50; x < ARENA.width; x += 100) {
+    for (let y = 50; y < this.height; y += 100) {
+      for (let x = 50; x < this.width; x += 100) {
         if (random() > 0.55) continue;
         ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
         ctx.beginPath();
@@ -224,8 +233,8 @@ export class DecalSystem {
 
     // Grime, oil and hairline cracks
     for (let i = 0; i < 110; i += 1) {
-      const x = random() * ARENA.width;
-      const y = random() * ARENA.height;
+      const x = random() * this.width;
+      const y = random() * this.height;
       const r = 8 + random() * 55;
       const gradient = ctx.createRadialGradient(x, y, 0, x, y, r);
       gradient.addColorStop(0, `rgba(0, 0, 0, ${0.06 + random() * 0.12})`);
@@ -237,8 +246,8 @@ export class DecalSystem {
     }
     ctx.strokeStyle = "rgba(0,0,0,0.3)";
     for (let i = 0; i < 26; i += 1) {
-      let x = random() * ARENA.width;
-      let y = random() * ARENA.height;
+      let x = random() * this.width;
+      let y = random() * this.height;
       ctx.lineWidth = random() * 0.9 + 0.3;
       ctx.beginPath();
       ctx.moveTo(x, y);
@@ -251,32 +260,39 @@ export class DecalSystem {
     }
 
     // Heavy panel seams every four tiles.
-    for (let x = 400; x < ARENA.width; x += 400) {
+    for (let x = 400; x < this.width; x += 400) {
       ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
-      ctx.fillRect(x, ARENA.wall, 2, ARENA.height - ARENA.wall * 2);
+      ctx.fillRect(x, ARENA.wall, 2, this.height - ARENA.wall * 2);
       ctx.fillStyle = "rgba(255, 255, 255, 0.035)";
-      ctx.fillRect(x + 2, ARENA.wall, 1, ARENA.height - ARENA.wall * 2);
+      ctx.fillRect(x + 2, ARENA.wall, 1, this.height - ARENA.wall * 2);
     }
-    for (let y = 400; y < ARENA.height; y += 400) {
+    for (let y = 400; y < this.height; y += 400) {
       ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
-      ctx.fillRect(ARENA.wall, y, ARENA.width - ARENA.wall * 2, 2);
+      ctx.fillRect(ARENA.wall, y, this.width - ARENA.wall * 2, 2);
       ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
-      ctx.fillRect(ARENA.wall, y + 2, ARENA.width - ARENA.wall * 2, 1);
+      ctx.fillRect(ARENA.wall, y + 2, this.width - ARENA.wall * 2, 1);
     }
 
-    // Stencilled sector marking.
+    // Stencilled sector marking. The gauntlet is five 1200px chambers, so each
+    // room gets its own floor stencil instead of one label in the middle.
     ctx.save();
     ctx.globalAlpha = 0.06;
-    ctx.font = "700 96px 'Chakra Petch', 'Segoe UI', sans-serif";
     ctx.textAlign = "center";
     ctx.fillStyle = "#c8d6e2";
-    ctx.fillText(mode === "tutorial" ? "PROVING GROUND" : "SECTOR 04", ARENA.width / 2, 240);
-    ctx.font = "700 46px 'Chakra Petch', 'Segoe UI', sans-serif";
-    ctx.fillText(
-      mode === "tutorial" ? "CONTAINMENT // 01-05" : "BIOFOUNDRY // B4",
-      ARENA.width / 2,
-      ARENA.height - 150,
-    );
+    if (mode === "tutorial") {
+      for (let room = 0; room < 5; room += 1) {
+        const cx = room * 1200 + 600;
+        ctx.font = "700 96px 'Chakra Petch', 'Segoe UI', sans-serif";
+        ctx.fillText("PROVING GROUND", cx, 250);
+        ctx.font = "700 40px 'Chakra Petch', 'Segoe UI', sans-serif";
+        ctx.fillText(`CONTAINMENT // 0${room + 1}`, cx, 310);
+      }
+    } else {
+      ctx.font = "700 96px 'Chakra Petch', 'Segoe UI', sans-serif";
+      ctx.fillText("SECTOR 04", this.width / 2, 240);
+      ctx.font = "700 46px 'Chakra Petch', 'Segoe UI', sans-serif";
+      ctx.fillText("BIOFOUNDRY // B4", this.width / 2, this.height - 150);
+    }
     ctx.restore();
 
     // Painted chevrons that point toward the arena interior.
@@ -285,9 +301,9 @@ export class DecalSystem {
     ctx.strokeStyle = COLORS.hazard;
     ctx.lineWidth = 3;
     for (const [cx, cy, dir] of [
-      [150, ARENA.height / 2, 1],
-      [ARENA.width - 150, ARENA.height / 2, -1],
-      [ARENA.width / 2, 150, 0],
+      [150, this.height / 2, 1],
+      [this.width - 150, this.height / 2, -1],
+      [this.width / 2, 150, 0],
     ] as const) {
       ctx.save();
       ctx.translate(cx, cy);
@@ -304,29 +320,29 @@ export class DecalSystem {
     ctx.restore();
 
     // Dormant light strips
-    for (let y = 240; y < ARENA.height; y += 320) {
+    for (let y = 240; y < this.height; y += 320) {
       ctx.fillStyle = "rgba(30, 84, 98, 0.3)";
-      ctx.fillRect(ARENA.wall + 90, y, ARENA.width - (ARENA.wall + 90) * 2, 5);
+      ctx.fillRect(ARENA.wall + 90, y, this.width - (ARENA.wall + 90) * 2, 5);
       ctx.fillStyle = "rgba(70, 190, 210, 0.08)";
-      ctx.fillRect(ARENA.wall + 90, y - 1, ARENA.width - (ARENA.wall + 90) * 2, 2);
+      ctx.fillRect(ARENA.wall + 90, y - 1, this.width - (ARENA.wall + 90) * 2, 2);
     }
 
     // Hazard border band
     const band = ARENA.wall;
     ctx.save();
     ctx.beginPath();
-    ctx.rect(0, 0, ARENA.width, ARENA.height);
-    ctx.rect(band, band, ARENA.width - band * 2, ARENA.height - band * 2);
+    ctx.rect(0, 0, this.width, this.height);
+    ctx.rect(band, band, this.width - band * 2, this.height - band * 2);
     ctx.clip("evenodd");
     ctx.fillStyle = "#0c0e12";
-    ctx.fillRect(0, 0, ARENA.width, ARENA.height);
+    ctx.fillRect(0, 0, this.width, this.height);
     ctx.globalAlpha = 0.24;
     ctx.strokeStyle = COLORS.hazard;
     ctx.lineWidth = 14;
-    for (let i = -ARENA.height; i < ARENA.width + ARENA.height; i += 56) {
+    for (let i = -this.height; i < this.width + this.height; i += 56) {
       ctx.beginPath();
       ctx.moveTo(i, 0);
-      ctx.lineTo(i + ARENA.height, ARENA.height);
+      ctx.lineTo(i + this.height, this.height);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -335,18 +351,18 @@ export class DecalSystem {
     // Border frame lines
     ctx.strokeStyle = "rgba(216, 169, 29, 0.35)";
     ctx.lineWidth = 2;
-    ctx.strokeRect(band - 1, band - 1, ARENA.width - band * 2 + 2, ARENA.height - band * 2 + 2);
+    ctx.strokeRect(band - 1, band - 1, this.width - band * 2 + 2, this.height - band * 2 + 2);
     ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
     ctx.lineWidth = 2;
-    ctx.strokeRect(0.5, 0.5, ARENA.width - 1, ARENA.height - 1);
+    ctx.strokeRect(0.5, 0.5, this.width - 1, this.height - 1);
 
     // Corner warning chevrons
     ctx.fillStyle = "rgba(216, 169, 29, 0.22)";
     for (const [cx, cy, sx, sy] of [
       [band + 18, band + 18, 1, 1],
-      [ARENA.width - band - 18, band + 18, -1, 1],
-      [band + 18, ARENA.height - band - 18, 1, -1],
-      [ARENA.width - band - 18, ARENA.height - band - 18, -1, -1],
+      [this.width - band - 18, band + 18, -1, 1],
+      [band + 18, this.height - band - 18, 1, -1],
+      [this.width - band - 18, this.height - band - 18, -1, -1],
     ] as const) {
       ctx.save();
       ctx.translate(cx, cy);

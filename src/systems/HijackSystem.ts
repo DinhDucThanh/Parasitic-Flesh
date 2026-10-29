@@ -1,4 +1,4 @@
-import { AIM, BLAST, CHIMERA, HITSTOP, POSSESSION, SPORE } from "../core/config";
+import { AIM, BLAST, HITSTOP, POSSESSION, SPORE } from "../core/config";
 import { angleDelta, clamp, type Vec2 } from "../core/math";
 import { GRAFT_BY_KIND, type GraftKind, type Host } from "../entities/Host";
 import type { World } from "../world/World";
@@ -47,7 +47,7 @@ export class HijackSystem {
 
     switch (spore.state) {
       case "free": {
-        spore.move(dtSim, input.moveAxis);
+        spore.move(dtSim, input.moveAxis, world.bounds);
         spore.aimAngle = Math.atan2(mouse.y - spore.position.y, mouse.x - spore.position.x);
         if (input.rightPressed) {
           spore.state = "aiming";
@@ -61,7 +61,7 @@ export class HijackSystem {
       case "aiming": {
         this.aimTime += dtReal;
         // Real-time drift keeps aiming responsive inside 0.18x bullet-time.
-        spore.move(dtReal * SPORE.aimMove, input.moveAxis);
+        spore.move(dtReal * SPORE.aimMove, input.moveAxis, world.bounds);
         this.updateAim(world, spore.position, mouse);
         if (!input.rightHeld) this.releaseAim(world);
         break;
@@ -166,18 +166,17 @@ export class HijackSystem {
 
     // Shift sprints: faster movement, but the decay clock drains faster too.
     const axis = world.input.moveAxis;
-    const moving = Math.hypot(axis.x, axis.y) > 1e-4;
+    const moving = host.kind !== "mutant" && Math.hypot(axis.x, axis.y) > 1e-4;
     // Sprint drains stamina and is refused while exhausted or out of stamina.
     host.sprinting = host.updateStamina(
       dtSim,
       moving,
       world.input.anyDown("ShiftLeft", "ShiftRight"),
     );
-    // Chimera creep: enough to reposition, never enough to chase.
-    const creep = CHIMERA.creep * (host.sprinting ? POSSESSION.sprintMultiplier : 1);
-    const moveSpeed = host.kind === "mutant" ? creep : host.speed;
+    // Chimera locomotion is committed to its claw-lunge, not walking.
+    const moveSpeed = host.kind === "mutant" ? 0 : host.speed;
     // Glide carries sprint momentum through a release instead of stopping dead.
-    host.glide(axis, dtSim, moveSpeed);
+    host.glide(axis, dtSim, moveSpeed, world.bounds);
     if (host.sprinting && moving) {
       // Dust kicked up behind the body while sprinting.
       const len = Math.hypot(axis.x, axis.y) || 1;
@@ -208,7 +207,7 @@ export class HijackSystem {
       return;
     }
 
-    if (world.input.leftHeld) {
+    if (host.kind === "security" ? world.input.leftPressed : world.input.leftHeld) {
       const reach = 700;
       world.combat.attack(host, {
         x: host.position.x + Math.cos(aim) * reach,
@@ -232,6 +231,12 @@ export class HijackSystem {
       if (!host.alive || host.possessed) continue;
       const dist = Math.hypot(host.position.x - from.x, host.position.y - from.y);
       if (dist > AIM.range || dist < 1) continue;
+      // The enforcer's riot shield also rejects a frontal hijack.
+      if (host.kind === "enforcer") {
+        const dx = (from.x - host.position.x) / dist;
+        const dy = (from.y - host.position.y) / dist;
+        if (dx * Math.cos(host.facing) + dy * Math.sin(host.facing) > 0.32) continue;
+      }
       // Chamber walls and sealed blast doors block the leap; this is what keeps
       // the Proving Ground linear and prevents hijacking through geometry.
       if (world.segmentBlocked(from, host.position)) continue;
@@ -276,6 +281,7 @@ export class HijackSystem {
     host.alive = false;
     host.possessed = false;
     host.sprinting = false;
+    host.dropTime = 0;
     world.lastHostKind = host.kind;
     world.decals.stampBlood(origin.x, origin.y, host.radius + 12);
     spawnBurst(world.particles, origin.x, origin.y, 8, 160, "#7d1420", 3, 0.5);
@@ -324,13 +330,16 @@ export class HijackSystem {
     // Flush the click that was held during the leap before the body can act.
     world.input.clearMouseState();
     target.becomePossessed();
+    world.dungeon?.applyHostBonuses(target);
     world.spore.state = "hosted";
     world.spore.targetId = null;
 
     if (source) {
       const graft = GRAFT_BY_KIND[source];
-      target.grafts.add(graft);
-      world.announceGraft(graft);
+      if (graft) {
+        target.grafts.add(graft);
+        world.announceGraft(graft);
+      }
       world.lastHostKind = null;
     }
 
@@ -350,12 +359,7 @@ export class HijackSystem {
 }
 
 /** Named for the codex: which body grants which passive. */
-export const GRAFT_INFO: Record<Host["kind"], { graft: GraftKind; name: string; detail: string }> = {
-  security: {
-    graft: "sidearm",
-    name: "SHOULDER SIDEARM",
-    detail: "An autonomous sidearm tracks the nearest hostile.",
-  },
+export const GRAFT_INFO: Partial<Record<Host["kind"], { graft: GraftKind; name: string; detail: string }>> = {
   enforcer: {
     graft: "dorsalShield",
     name: "DORSAL PLATING",

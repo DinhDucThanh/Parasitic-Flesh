@@ -20,6 +20,8 @@ export type SoundKey =
   | "graft"
   | "win"
   | "step"
+  | "door"
+  | "warning"
   | "whisper";
 
 /** Sounds that may be replaced by a file in `public/assets/audio/`. */
@@ -215,6 +217,15 @@ export class SfxSynth {
         break;
       case "step":
         this.noise(t, 0.05, 0.05, 520, 240, 1.2, "lowpass");
+        break;
+      case "door":
+        // Hydraulic release: a hiss of escaping pressure over a servo drop.
+        this.noise(t, 0.42, 0.1, 2600, 700, 0.7, "bandpass");
+        this.tone("sawtooth", 118, 48, t + 0.04, 0.5, 0.1);
+        this.tone("sine", 62, 34, t + 0.06, 0.6, 0.16);
+        break;
+      case "warning":
+        this.tone("triangle", 280, 950, t, 0.85, 0.09);
         break;
       case "whisper":
         this.noise(t, 0.5, 0.03, 1200, 2600, 1.6, "bandpass");

@@ -84,8 +84,6 @@ export const CHIMERA = {
   cooldown: 1.5,
   /** Slow head-tracking rate while stalking. */
   turnRate: 1.6,
-  /** Possessed chimera: sluggish creep, dash is the locomotion. */
-  creep: 50,
   playerDashSpeed: 900,
   playerDashDistance: 220,
   playerDashTime: 220 / 900,

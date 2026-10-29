@@ -299,7 +299,7 @@ export class MainMenu {
     ctx.font = FONT(13, 500);
     fillTextShadow(
       ctx,
-      "A BODY-HORROR HIJACK ROGUELITE  //  SECTOR 4",
+      "A BODY-HORROR HIJACK ROGUELITE  //  DUNGEON",
       left,
       height * 0.32 + titleSize * 1.02 + 30,
       "rgba(175, 215, 198, 0.7)",
@@ -327,7 +327,7 @@ export class MainMenu {
     ctx.font = FONT(11, 600);
     fillTextShadow(ctx, "ENTER // TUTORIAL    D // SECTOR 1    C // CODEX", left, height - 76, "rgba(175, 215, 198, 0.5)");
     ctx.textAlign = "right";
-    fillTextShadow(ctx, "BIO-TERMINAL // SECTOR 4", width - 40, height - 76, "rgba(175, 215, 198, 0.35)");
+    fillTextShadow(ctx, "BIO-TERMINAL // CONTAINMENT", width - 40, height - 76, "rgba(175, 215, 198, 0.35)");
     ctx.textAlign = "left";
     fillTextShadow(ctx, time % 1.4 < 0.7 ? "SYS: ONLINE_" : "SYS: ONLINE", left, height - 96, "rgba(0, 255, 136, 0.55)");
 

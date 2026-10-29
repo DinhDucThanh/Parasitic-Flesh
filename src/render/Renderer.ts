@@ -4,19 +4,18 @@ import { FONT, fillTextShadow } from "../core/fonts";
 import type { Camera } from "../core/Camera";
 import type { Input } from "../core/Input";
 import { TAU, clamp } from "../core/math";
-import type { Host } from "../entities/Host";
+import { HOST_RIG_ROWS, type Host } from "../entities/Host";
 import type { World } from "../world/World";
-import { TUTORIAL_ROOMS, type Door, type TutorialObjective } from "../world/Tutorial";
+import { TUTORIAL, TUTORIAL_ROOMS, type TutorialObjective } from "../world/Tutorial";
+import { SpriteSheet } from "./SpriteSheet";
+import { Tilemap } from "./Tilemap";
+import { drawMinimap } from "./MinimapUI";
+import { MUTATIONS } from "../game/RunManager";
 import {
   drawAimCone,
   drawExplosion,
   drawHazard,
-  drawHost,
-  drawHostStatus,
   drawParticle,
-  drawProjectile,
-  drawSpore,
-  drawTarget,
   drawWhisper,
   rgba,
   roundedRect,
@@ -31,6 +30,8 @@ import {
  * light punches are pre-rendered once into offscreen sprites, and the canvas
  * backing store never exceeds 1.25x CSS resolution.
  */
+interface SlimeDrop { x: number; y: number; radius: number; maxLife: number; life: number; color: string; stretch: number; angle: number }
+
 export class Renderer {
   readonly ctx: CanvasRenderingContext2D;
   width = 1;
@@ -45,6 +46,14 @@ export class Renderer {
   /** Eased visibility of the under-feet stamina bar. */
   private staminaBarAlpha = 0;
   private staminaBarTime = 0;
+  private sheets: { spore: SpriteSheet; guard: SpriteSheet; enforcer: SpriteSheet; chimera: SpriteSheet } | null = null;
+  private tilemap: Tilemap | null = null;
+  private slime: SlimeDrop[] = [];
+  private slimeClock = 0;
+  private slimeTime = 0;
+  private slimeWasMoving = false;
+  private slimeDir = { x: 1, y: 0 };
+  private slimeLevel: World["level"] = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -145,9 +154,26 @@ export class Renderer {
     const view = camera.view;
     this.applyCamera(camera);
 
-    world.decals.draw(ctx);
+    this.ensureSprites();
+    ctx.imageSmoothingEnabled = false;
+    if (world.dungeon) {
+      ctx.save(); ctx.beginPath();
+      for (const room of world.dungeon.layout.rooms) ctx.rect(room.rect.x, room.rect.y, room.rect.w, room.rect.h);
+      for (const corridor of world.dungeon.layout.corridors) ctx.rect(corridor.x, corridor.y, corridor.w, corridor.h);
+      ctx.clip();
+      this.tilemap?.ground(ctx, view, world.bounds.width, world.bounds.height);
+      world.decals.draw(ctx);
+      ctx.restore();
+    } else {
+      this.tilemap?.ground(ctx, view, world.bounds.width, world.bounds.height);
+      world.decals.draw(ctx);
+    }
     this.drawTutorialFloor(world, time);
-    this.drawArchitecture(world);
+    this.tilemap?.architecture(ctx, view, world.walls, world.doors);
+    this.drawTutorialProps(world, time);
+    this.drawLabDecor(world, time);
+    this.drawDungeon(world, time);
+    this.drawSlime(ctx, world, time);
 
     for (const hazard of world.hazards) drawHazard(ctx, hazard);
 
@@ -158,10 +184,13 @@ export class Renderer {
     }
 
     for (const target of world.targets) {
-      if (inView(view, target.position.x, target.position.y, 60)) drawTarget(ctx, target, time);
+      if (inView(view, target.position.x, target.position.y, 60)) {
+        const props = this.assets.image("props");
+        if (props) ctx.drawImage(props, (target.alive ? 5 : 6) * 16, 0, 16, 16, target.position.x - 22, target.position.y - 22, 44, 44);
+      }
     }
 
-    const hosts = world.hosts.filter((host) => host.alive).sort((a, b) => a.position.y - b.position.y);
+    const hosts = world.hosts.filter((host) => host.alive || (host.dropTime >= 0 && host.dropTime < 1.2)).sort((a, b) => a.position.y - b.position.y);
     for (const host of hosts) {
       if (!inView(view, host.position.x, host.position.y, host.radius * 3)) continue;
       this.drawHostSprite(ctx, host, time);
@@ -173,7 +202,14 @@ export class Renderer {
     }
 
     for (const projectile of world.projectiles) {
-      if (inView(view, projectile.position.x, projectile.position.y, 30)) drawProjectile(ctx, projectile);
+      if (inView(view, projectile.position.x, projectile.position.y, 30)) {
+        const image = this.assets.image("projectiles");
+        if (image) {
+          ctx.save(); ctx.translate(projectile.position.x, projectile.position.y); ctx.rotate(projectile.angle);
+          ctx.drawImage(image, projectile.team === "player" ? 0 : 16, 0, 16, 8, -16, -4, 20, 8);
+          ctx.restore();
+        }
+      }
     }
 
     for (const effect of world.effects) {
@@ -195,6 +231,27 @@ export class Renderer {
     this.drawLighting(world);
     this.drawGlows(world, time);
     this.drawWorldUi(world, time);
+    this.drawChamberMask(world);
+  }
+
+  /**
+   * Sealed chambers: everything outside the active room (or the pair being
+   * panned between) is void. This keeps a 16:9 viewport from peeking into the
+   * next chamber when the room is 1.6:1.
+   */
+  private drawChamberMask(world: World): void {
+    const mask = world.cameraMask;
+    if (!mask) return;
+    const ctx = this.ctx;
+    const x0 = -2000;
+    const y0 = -2000;
+    const x1 = 8000;
+    const y1 = 3000;
+    ctx.fillStyle = COLORS.void;
+    ctx.fillRect(x0, y0, x1 - x0, mask.y - y0);
+    ctx.fillRect(x0, mask.y + mask.h, x1 - x0, y1 - (mask.y + mask.h));
+    ctx.fillRect(x0, mask.y, mask.x - x0, mask.h);
+    ctx.fillRect(mask.x + mask.w, mask.y, x1 - (mask.x + mask.w), mask.h);
   }
 
   // --- Level architecture -------------------------------------------------
@@ -211,26 +268,26 @@ export class Renderer {
     ctx.font = FONT(104, 700);
     ctx.fillStyle = "rgba(205, 225, 235, 0.045)";
     TUTORIAL_ROOMS.forEach((x, index) => {
-      ctx.fillText(String(index + 1).padStart(2, "0"), x, 930);
+      ctx.fillText(String(index + 1).padStart(2, "0"), x, TUTORIAL.roomHeight - 80);
     });
     ctx.restore();
 
     // Live wall conduits: lethal to the naked spore in chamber one.
     for (const conduit of tutorial.conduits) {
-      const charge = tutorial.phase === 0 ? 0.5 + Math.sin(time * 8) * 0.28 : 0.16;
-      ctx.save();
-      ctx.fillStyle = `rgba(255, 60, 70, ${charge * 0.3})`;
-      ctx.fillRect(conduit.x, conduit.y, conduit.w, conduit.h);
-      ctx.strokeStyle = `rgba(255, 96, 96, ${charge})`;
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(conduit.x, conduit.y, conduit.w, conduit.h);
-      ctx.strokeStyle = `rgba(255, 192, 192, ${charge * 0.45})`;
-      ctx.lineWidth = 1;
-      for (let y = conduit.y + 10; y < conduit.y + conduit.h; y += 24) {
-        ctx.beginPath();
-        ctx.moveTo(conduit.x + 3, y);
-        ctx.lineTo(conduit.x + conduit.w - 3, y);
-        ctx.stroke();
+      const charge = tutorial.phase === 0 ? 0.7 + Math.sin(time * 9) * 0.2 : 0.2;
+      ctx.save(); ctx.globalAlpha = charge;
+      ctx.fillStyle = "rgba(255,0,85,0.24)"; ctx.fillRect(conduit.x, conduit.y, conduit.w, conduit.h);
+      ctx.fillStyle = "#ff0055"; ctx.fillRect(conduit.x + conduit.w * 0.3, conduit.y, conduit.w * 0.4, conduit.h);
+      ctx.fillStyle = "#ff88aa"; ctx.fillRect(conduit.x + conduit.w * 0.47, conduit.y, 2, conduit.h);
+      const lab = this.assets.image("lab_props");
+      if (lab) {
+        ctx.drawImage(lab, 48, 0, 24, 36, conduit.x - 5, conduit.y - 12, conduit.w + 10, 28);
+        ctx.drawImage(lab, 48, 0, 24, 36, conduit.x - 5, conduit.y + conduit.h - 16, conduit.w + 10, 28);
+      }
+      ctx.fillStyle = "#ffe3ed";
+      for (let i = 0; i < 4; i++) {
+        const y = conduit.y + ((time * 120 + i * 83) % conduit.h);
+        ctx.fillRect(conduit.x + ((i % 2) ? 2 : conduit.w - 4), y, 2, 3);
       }
       ctx.restore();
     }
@@ -273,218 +330,331 @@ export class Renderer {
     }
     ctx.restore();
 
-    // Exit portal.
-    const portal = tutorial.portal;
-    ctx.save();
-    ctx.translate(portal.x, portal.y);
-    ctx.strokeStyle = portal.active
-      ? `rgba(141, 255, 202, ${0.65 + Math.sin(time * 5) * 0.2})`
-      : "rgba(110, 140, 150, 0.2)";
-    ctx.lineWidth = portal.active ? 2.4 : 1.4;
-    for (let i = 0; i < 3; i += 1) {
-      const width = portal.radius * (0.5 + i * 0.22);
-      const height = portal.radius * (1.15 + i * 0.18);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, width, height, 0, 0, TAU);
-      ctx.stroke();
+  }
+
+  private drawTutorialProps(world: World, time: number): void {
+    const tutorial = world.tutorial;
+    if (!tutorial) return;
+    const ctx = this.ctx;
+    // Shared pixel assets teach the same telegraph, capsule and portal as the dungeon.
+    const props = this.assets.image("props");
+    if (props) {
+      for (const marker of tutorial.breachMarkers) {
+        ctx.save(); ctx.globalAlpha = 0.65 + Math.sin(time * 20) * 0.35;
+        ctx.drawImage(props, 8 * 16, 0, 16, 16, marker.x - 16, marker.y - 16, 32, 32); ctx.restore();
+      }
+      if (tutorial.portal.active) {
+        ctx.drawImage(props, 4 * 16, 0, 16, 16, tutorial.portal.x - 36, tutorial.portal.y - 36, 72, 72);
+        if (!tutorial.capsuleOpened) ctx.drawImage(props, 2 * 16, 0, 16, 16, tutorial.capsule.x - 24, tutorial.capsule.y - 24, 48, 48);
+      }
+      const barricade = world.doorById("barricade");
+      if (barricade && !barricade.destroyed) {
+        for (let y = barricade.y; y < barricade.y + barricade.h; y += 26) ctx.drawImage(props, 0, 0, 16, 16, barricade.x, y, barricade.w, Math.min(26, barricade.y + barricade.h - y));
+      }
     }
-    if (portal.active) {
-      const core = ctx.createLinearGradient(0, -portal.radius, 0, portal.radius);
-      core.addColorStop(0, "rgba(141, 255, 202, 0.02)");
-      core.addColorStop(0.5, "rgba(141, 255, 202, 0.26)");
-      core.addColorStop(1, "rgba(141, 255, 202, 0.02)");
-      ctx.fillStyle = core;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, portal.radius * 0.55, portal.radius * 1.2, 0, 0, TAU);
-      ctx.fill();
+  }
+
+  private drawLabDecor(world: World, time: number): void {
+    const lab = this.assets.image("lab_props");
+    if (!lab) return;
+    const ctx = this.ctx, view = world.camera.view;
+    const rooms = world.dungeon ? world.dungeon.layout.rooms.map(room => room.rect) : TUTORIAL_ROOMS.map(x => ({ x: x - TUTORIAL.roomWidth / 2, y: 0, w: TUTORIAL.roomWidth, h: TUTORIAL.roomHeight }));
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    for (const room of rooms) {
+      if (room.x > view.maxX || room.x + room.w < view.minX || room.y > view.maxY || room.y + room.h < view.minY) continue;
+      // Decoration sits just inside walls and never changes collision or spawn locations.
+      const fixtures = world.dungeon
+        ? [{ x: room.x + 58, y: room.y + 42, kind: 0 }, { x: room.x + room.w - 58, y: room.y + 42, kind: 1 }]
+        : [
+            { x: room.x + 58, y: room.y + 42, kind: 0 },
+            { x: room.x + room.w * 0.35, y: room.y + 55, kind: 1 },
+            { x: room.x + room.w * 0.65, y: room.y + room.h - 55, kind: 0 },
+            { x: room.x + room.w - 82, y: room.y + 42, kind: 1 },
+          ];
+      for (const f of fixtures) {
+        if (!inView(view, f.x, f.y, 90)) continue;
+        if (f.kind === 0) {
+          ctx.save(); ctx.globalAlpha = 0.25; ctx.globalCompositeOperation = "lighter";
+          ctx.drawImage(this.glowSprite("#00ff88"), f.x - 48, f.y - 48, 96, 96); ctx.restore();
+        }
+        ctx.drawImage(lab, f.kind * 24, 0, 24, 36, f.x - 12, f.y - 18, 24, 36);
+        if (f.kind === 0) {
+          ctx.fillStyle = "#b3ffec";
+          for (let i = 0; i < 3; i++) ctx.fillRect(f.x - 4 + i * 4, f.y + 8 - ((time * 6 + i * 7) % 16), 1, 1);
+        } else {
+          ctx.globalAlpha = 0.4 + (Math.sin(time * 7) + 1) * 0.3;
+          ctx.fillStyle = "#00ff88"; ctx.fillRect(f.x + 1, f.y + 6, 2, 2); ctx.globalAlpha = 1;
+        }
+      }
     }
     ctx.restore();
   }
 
-  private drawArchitecture(world: World): void {
-    if (world.walls.length === 0 && world.doors.length === 0) return;
-    const ctx = this.ctx;
-
-    for (const wall of world.walls) {
-      ctx.fillStyle = "#10161d";
-      ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
-      ctx.fillStyle = "#202b36";
-      ctx.fillRect(wall.x, wall.y, wall.w, 4);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
-      ctx.fillRect(wall.x, wall.y + wall.h - 3, wall.w, 3);
-      ctx.strokeStyle = "rgba(120, 160, 180, 0.13)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(wall.x + 0.5, wall.y + 0.5, wall.w - 1, wall.h - 1);
-
-      // Sparse rivets.
-      ctx.fillStyle = "rgba(140, 170, 185, 0.22)";
-      if (wall.w > wall.h) {
-        for (let x = wall.x + 14; x < wall.x + wall.w - 8; x += 58) {
-          ctx.beginPath();
-          ctx.arc(x, wall.y + wall.h * 0.5, 1.6, 0, TAU);
-          ctx.fill();
+  private drawDungeon(world: World, time: number): void {
+    const dungeon = world.dungeon, image = this.assets.image("props"), tiles = this.assets.image("tileset");
+    if (!dungeon || !image || !tiles) return;
+    const ctx = this.ctx, view = world.camera.view;
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    const sprite = (index: number, x: number, y: number, size: number): void => {
+      ctx.drawImage(image, index * 16, 0, 16, 16, x - size / 2, y - size / 2, size, size);
+    };
+    for (const room of dungeon.layout.rooms) {
+      if (!inView(view, room.rect.x + room.rect.w / 2, room.rect.y + room.rect.h / 2, 300)) continue;
+      for (const prop of room.props) {
+        if (prop.destroyed) continue;
+        const r = prop.rect, col = prop.kind === "pillar" ? 2 : prop.kind === "barrel" ? 1 : prop.kind === "crate" ? 0 : 2;
+        const row = prop.kind === "grate" ? 0 : 2;
+        if (prop.kind === "crate" || prop.kind === "barrel") ctx.drawImage(image, col * 16, 0, 16, 16, r.x, r.y, r.w, r.h);
+        else ctx.drawImage(tiles, col * 16, row * 16, 16, 16, r.x, r.y, r.w, r.h);
+        if (prop.kind === "grate") {
+          ctx.fillStyle = "rgba(0,255,136,0.65)";
+          for (let i = 0; i < 3; i++) ctx.fillRect(r.x + 5 + i * 9, r.y + r.h - 4 - ((time * 5 + i * 6) % (r.h - 6)), 1, 2);
         }
-      } else {
-        for (let y = wall.y + 14; y < wall.y + wall.h - 8; y += 58) {
+        if (prop.kind === "grate" && room.state === "active" && dungeon.hazardClock % 3 >= 1.5) {
+          ctx.globalAlpha = dungeon.hazardClock % 3 >= 2 ? 0.8 : 0.3 + Math.sin(time * 20) * 0.2;
+          ctx.fillStyle = "#ff0055"; ctx.fillRect(r.x, r.y, r.w, r.h); ctx.globalAlpha = 1;
+        }
+        if (prop.kind === "barrel" && prop.fuse !== undefined) {
+          // Warning swell: the casing flashes red/green while the blast ring opens.
+          const swell = 1 - prop.fuse / 0.4;
+          const flash = Math.sin(time * 55) > 0;
+          const pad = 2 + swell * 4;
+          ctx.globalAlpha = 0.5 + Math.sin(time * 55) * 0.25;
+          ctx.fillStyle = flash ? "#ff2244" : "#00ff88";
+          ctx.fillRect(r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2);
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = flash ? "rgba(255,34,68,0.9)" : "rgba(0,255,136,0.8)";
+          ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(wall.x + wall.w * 0.5, y, 1.6, 0, TAU);
-          ctx.fill();
+          ctx.arc(r.x + r.w / 2, r.y + r.h / 2, 12 + swell * 73, 0, TAU);
+          ctx.stroke();
         }
       }
-
-      // Hazard lip on the room-facing edge.
-      ctx.fillStyle = "rgba(216, 169, 29, 0.24)";
-      if (wall.w > wall.h) ctx.fillRect(wall.x, wall.y + wall.h - 5, wall.w, 1);
-      else ctx.fillRect(wall.x + wall.w - 5, wall.y, 1, wall.h);
+      const c = dungeon.center(room);
+      if (room.kind === "start") sprite(7, c.x + 75, c.y, 32);
+      if (room.kind === "altar" && !room.altarUsed) { sprite(3,c.x,c.y,32); ctx.font=FONT(11,700); ctx.textAlign="center"; fillTextShadow(ctx,"[E] SACRIFICE FOR BLESSING",c.x,c.y-25,"#00ff88"); }
+      if (room.kind === "portal") { ctx.globalAlpha=room.state === "cleared" ? 1 : 0.4; sprite(4,c.x,c.y,40); ctx.globalAlpha=1; }
+      if ((room.kind === "chest" || room.kind === "combat" || room.kind === "elite") && room.state === "cleared" && !room.rewardOpened) sprite(2,c.x,c.y,32);
+      for (const marker of room.telegraphs) { ctx.globalAlpha=0.65+Math.sin(time*20)*0.35; sprite(8,marker.x,marker.y,24); ctx.globalAlpha=1; }
     }
-
-    for (const door of world.doors) this.drawDoor(door);
+    for (const orb of dungeon.orbs) { ctx.fillStyle=orb.kind === "dna" ? "#00ff88" : "#8effc0"; ctx.fillRect(orb.x-3,orb.y-3,6,6); }
+    ctx.restore();
   }
 
-  private drawDoor(door: Door): void {
-    const ctx = this.ctx;
-    const { x, y, w, h } = door;
-    const reinforced = door.kind === "reinforced";
-
-    // Frame only: the opening itself must stay transparent so an open door
-    // reads as a gap rather than a dark slab.
-    ctx.fillStyle = "#070b0f";
-    ctx.fillRect(x - 5, y - 5, w + 10, 5);
-    ctx.fillRect(x - 5, y + h, w + 10, 5);
-    ctx.fillRect(x - 5, y - 5, 5, h + 10);
-    ctx.fillRect(x + w, y - 5, 5, h + 10);
-
-    if (door.destroyed) {
-      ctx.fillStyle = "#2a1b1b";
-      ctx.fillRect(x, y, w, 16);
-      ctx.fillRect(x, y + h - 16, w, 16);
-      ctx.fillStyle = "rgba(255, 90, 60, 0.35)";
-      ctx.fillRect(x, y + 16, w, 2);
-      ctx.fillRect(x, y + h - 18, w, 2);
-      return;
-    }
-
-    const half = h / 2;
-    const topHeight = half * (1 - door.open);
-    const bottomHeight = half * (1 - door.open);
-
-    // Retracting panels slide up/down into the partition.
-    ctx.fillStyle = reinforced ? "#3b2424" : "#232d37";
-    ctx.fillRect(x, y, w, topHeight);
-    ctx.fillRect(x, y + h - bottomHeight, w, bottomHeight);
-    ctx.fillStyle = reinforced ? "#5a3230" : "#303d48";
-    ctx.fillRect(x + 3, y, w - 6, Math.max(0, topHeight - 3));
-    ctx.fillRect(x + 3, y + h - bottomHeight, w - 6, Math.max(0, bottomHeight - 3));
-
-    // Bright inner seam.
-    if (topHeight > 1) {
-      ctx.fillStyle = reinforced ? "rgba(255, 90, 60, 0.7)" : "rgba(216, 169, 29, 0.7)";
-      ctx.fillRect(x, y + topHeight - 2, w, 2);
-    }
-    if (bottomHeight > 1) {
-      ctx.fillStyle = reinforced ? "rgba(255, 90, 60, 0.7)" : "rgba(216, 169, 29, 0.7)";
-      ctx.fillRect(x, y + h - bottomHeight, w, 2);
-    }
-
-    // Frame rails.
-    ctx.fillStyle = "#0d1318";
-    ctx.fillRect(x - 3, y - 5, 3, h + 10);
-    ctx.fillRect(x + w, y - 5, 3, h + 10);
-
-    const status = door.open > 0.7 ? "#00ff88" : reinforced ? "#ff3d3d" : "#e6c455";
-    ctx.fillStyle = status;
-    ctx.beginPath();
-    ctx.arc(x + w * 0.5, y + h * 0.5, 2.6, 0, TAU);
-    ctx.fill();
-
-    if (reinforced) {
-      ctx.fillStyle = "rgba(255, 90, 60, 0.35)";
-      for (const oy of [0.18, 0.38, 0.62, 0.82]) {
-        ctx.fillRect(x + 3, y + h * oy, w - 6, 2);
-      }
-      ctx.strokeStyle = "rgba(255, 190, 100, 0.35)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x + 4.5, y + 4.5, w - 9, h - 9);
-    }
+  private drawMutationDraft(width: number, height: number): void {
+    const ctx=this.ctx;
+    ctx.save(); ctx.fillStyle="rgba(0,0,0,0.82)"; ctx.fillRect(0,0,width,height);
+    ctx.textAlign="center"; ctx.font=FONT(24,700); fillTextShadow(ctx,"CHOOSE A MUTATION",width/2,height/2-75,"#00ff88");
+    MUTATIONS.forEach((option,i)=>{
+      const y=height/2-40+i*48; ctx.fillStyle="#101e25"; ctx.fillRect(width/2-200,y,400,40);
+      ctx.strokeStyle="#00aa55"; ctx.strokeRect(width/2-200,y,400,40);
+      ctx.font=FONT(14,700); fillTextShadow(ctx,`[${i+1}] ${option.title}`,width/2,y+16,"#d8f5e6");
+      ctx.font=FONT(11,600); fillTextShadow(ctx,option.description,width/2,y+31,"#8ca0ba");
+    });
+    ctx.restore();
   }
 
-  // --- Entities -----------------------------------------------------------
+  private ensureSprites(): void {
+    if (!this.tilemap) {
+      const tiles = this.assets.image("tileset");
+      if (tiles) this.tilemap = new Tilemap(tiles);
+    }
+    if (this.sheets) return;
+    const spore = this.assets.image("spore");
+    const guard = this.assets.image("host_security");
+    const chimera = this.assets.image("host_mutant");
+    const enforcer = this.assets.image("host_enforcer");
+    if (!spore || !guard || !chimera || !enforcer) return;
+    this.sheets = {
+      spore: new SpriteSheet(spore, 16, 16, {
+        idle: { row: 0, frameCount: 4, frameRate: 6, loop: true },
+        down: { row: 1, frameCount: 6, frameRate: 12, loop: true },
+        up: { row: 2, frameCount: 6, frameRate: 12, loop: true },
+        side: { row: 3, frameCount: 6, frameRate: 12, loop: true },
+        charge: { row: 4, frameCount: 4, frameRate: 10, loop: true },
+        death: { row: 5, frameCount: 4, frameRate: 12, loop: false },
+      }),
+      guard: new SpriteSheet(guard, 20, 20, {
+        idle: { row: 0, frameCount: 4, frameRate: 5, loop: true },
+        walk_down: { row: 1, frameCount: 4, frameRate: 10, loop: true },
+        walk_up: { row: 2, frameCount: 4, frameRate: 10, loop: true },
+        walk_side: { row: 3, frameCount: 4, frameRate: 10, loop: true },
+        fire: { row: 4, frameCount: 2, frameRate: 16, loop: false },
+        drop: { row: 5, frameCount: 3, frameRate: 8, loop: false },
+      }),
+      enforcer: new SpriteSheet(enforcer, 32, 32, {
+        idle: { row: 0, frameCount: 4, frameRate: 5, loop: true },
+        walk_down: { row: 1, frameCount: 4, frameRate: 10, loop: true },
+        walk_up: { row: 2, frameCount: 4, frameRate: 10, loop: true },
+        walk_side: { row: 3, frameCount: 4, frameRate: 10, loop: true },
+        fire: { row: 4, frameCount: 2, frameRate: 16, loop: false },
+        drop: { row: 5, frameCount: 3, frameRate: 8, loop: false },
+      }),
+      chimera: new SpriteSheet(chimera, 28, 28, {
+        idle: { row: 0, frameCount: 4, frameRate: 5, loop: true },
+        walk_down: { row: 1, frameCount: 4, frameRate: 8, loop: true },
+        walk_up: { row: 2, frameCount: 4, frameRate: 8, loop: true },
+        walk_side: { row: 3, frameCount: 4, frameRate: 8, loop: true },
+        telegraph: { row: 4, frameCount: 3, frameRate: 12, loop: true },
+        lunge: { row: 5, frameCount: 2, frameRate: 16, loop: true },
+        stun: { row: 6, frameCount: 2, frameRate: 5, loop: true },
+      }),
+    };
+  }
 
-  private drawSporeSprite(ctx: CanvasRenderingContext2D, world: World, time: number): void {
+  private drawSporeSprite(ctx: CanvasRenderingContext2D, world: World, _time: number): void {
     const spore = world.spore;
-    const image = this.assets.image("spore");
-    if (!image) {
-      drawSpore(ctx, spore, time);
-      return;
-    }
-    const size = spore.radius * 5;
+    const sheet = this.sheets?.spore;
+    if (!sheet) return;
+    // Only the side slither and the charge drill have a meaningful facing.
+    const flip = spore.animation === "side"
+      ? Math.cos(spore.visualAngle) < 0
+      : spore.animation === "charge" && Math.cos(spore.aimAngle) < 0;
+    const base = 2.1;
+    // Squash and stretch pivot around the belly so the blob never floats.
+    const anchor = 4 * base;
     ctx.save();
     ctx.translate(spore.position.x, spore.position.y);
-    ctx.rotate(time * 0.7);
-    ctx.drawImage(image, -size / 2, -size / 2, size, size);
+    ctx.translate(0, anchor);
+    ctx.rotate(spore.wobbleDisplacement * 0.08);
+    ctx.scale(spore.deformX, spore.deformY);
+    ctx.translate(0, -anchor);
+    ctx.scale(base, base);
+    sheet.draw(ctx, spore.animation, spore.animationTime, 0, 0, flip);
     ctx.restore();
   }
 
   private drawHostSprite(ctx: CanvasRenderingContext2D, host: Host, time: number): void {
-    const key =
-      host.kind === "security" ? "host_security" : host.kind === "enforcer" ? "host_enforcer" : "host_mutant";
-    const image = this.assets.image(key);
-    if (host.possessed) this.drawSprintTrail(ctx, host, image, time);
-    if (!image) {
-      drawHost(ctx, host, time);
+    const sheet = host.kind === "mutant" ? this.sheets?.chimera : host.kind === "enforcer" ? this.sheets?.enforcer : this.sheets?.guard;
+    if (!sheet) return;
+    if (host.possessed) this.drawSprintTrail(ctx, host, sheet, time);
+    const size = sheet.frameWidth;
+    const scale = 2;
+    const angle = host.renderAim;
+    const left = Math.cos(angle) < 0;
+    const bob = host.moving > 0.1 ? Math.sin(host.walkPhase * 2) * 1.5 : 0;
+    const pitch = clamp(Math.atan2(Math.sin(angle), Math.abs(Math.cos(angle))), -0.55, 0.55) * (left ? -1 : 1);
+    const rows = HOST_RIG_ROWS[host.kind];
+    const anim = host.dropTime >= 0 && !host.alive ? (host.kind === "mutant" ? "stun" : "drop") : host.animation;
+    // The lower body walks along its travel vector; only side rows mirror.
+    const bodyFlip = anim === "walk_side" && host.bodyFlip;
+    ctx.save();
+    ctx.translate(host.position.x, host.position.y + bob);
+    ctx.scale(scale, scale);
+    sheet.draw(ctx, anim, host.dropTime >= 0 && !host.alive ? host.dropTime : host.animationTime, 0, 0, bodyFlip, host.flash > 0.45);
+    ctx.restore();
+    if (!host.alive) return;
+
+    // The head, face and parasite share the neck pivot and pitch transform.
+    const neckY = host.position.y - size * scale * 0.38 + bob + host.idleDip * scale;
+    ctx.save(); ctx.translate(host.position.x, neckY); ctx.rotate(pitch);
+    if (left) ctx.scale(-1, 1);
+    ctx.drawImage(sheet.image, 0, size * rows.head, size, size, -size, -size, size * 2, size * 2);
+    const eye = host.possessed ? "#00ff88" : host.kind === "security" ? "#00f5ff" : host.kind === "enforcer" ? "#ff4d00" : "#ffee00";
+    ctx.fillStyle = eye;
+    // Convert the desired world-space gaze offset into the pitched, flipped head's local space.
+    const dx = Math.cos(angle) * 1.5, dy = Math.sin(angle) * 1.5;
+    const gazeX = (dx * Math.cos(pitch) + dy * Math.sin(pitch)) * (left ? -1 : 1);
+    const gazeY = -dx * Math.sin(pitch) + dy * Math.cos(pitch);
+    if (host.kind === "mutant") {
+      // Three ocular pits across the brow. Crop-and-shift gaze keeps them on the cursor.
+      for (let i = 0; i < 3; i++) ctx.fillRect(size * (-0.1 + i * 0.2) + gazeX, -size * 0.3 + gazeY, Math.max(1, size * 0.08), Math.max(1, size * 0.08));
     } else {
-      const size = host.radius * 4.4;
-      ctx.save();
-      ctx.translate(host.position.x, host.position.y);
-      ctx.rotate(host.facing);
-      ctx.drawImage(image, -size / 2, -size / 2, size, size);
-      ctx.restore();
-      if (host.possessed) {
-        ctx.save();
-        ctx.translate(host.position.x, host.position.y);
-        ctx.strokeStyle = rgba(COLORS.spore, 0.7);
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(0, 0, host.radius + 9, 0, TAU);
-        ctx.stroke();
-        ctx.restore();
+      ctx.fillRect(-size * 0.2 + gazeX, -size * 0.2 + gazeY, size * 0.4, size * 0.1);
+    }
+    if (host.possessed && host.alive) {
+      const spore = this.sheets?.spore;
+      if (spore) {
+        ctx.strokeStyle = "#00ff88"; ctx.lineWidth = 1.5 + Math.sin(time * 10) * 0.5;
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath(); ctx.moveTo(i * 3, -size * 0.55); ctx.quadraticCurveTo(i * 5 + Math.sin(time * 8 + i) * 2, -size * 0.25, i * 7, 3); ctx.stroke();
+        }
+        ctx.save(); ctx.translate(-4 + (host.decay < 3 ? Math.sin(time * 30) * 1.5 : 0), -size * 0.65);
+        const sporeScale = host.decay < 3 ? 1.4 : 1;
+        ctx.scale(sporeScale, sporeScale); spore.draw(ctx, "idle", time, 0, 0, false, host.decay < 3 && Math.sin(time * 15) > 0.4); ctx.restore();
       }
     }
+    ctx.restore();
 
-    if (host.possessed) this.drawStaminaBar(ctx, host, time);
-
-    if (host.isTrainingDummy && host.alive) {
-      ctx.save();
-      ctx.translate(host.position.x, host.position.y);
-      ctx.setLineDash([4, 6]);
-      ctx.lineDashOffset = time * 12;
-      ctx.strokeStyle = "rgba(230, 196, 85, 0.5)";
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.arc(0, 0, host.radius + 9, 0, TAU);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
+    // Weapon and bulwark follow the same angle used for shield and firing logic.
+    ctx.save(); ctx.translate(host.position.x, host.position.y - 2 + bob + host.idleDip * scale); ctx.rotate(angle);
+    ctx.translate(-host.recoil * 2, 0);
+    ctx.drawImage(sheet.image, 0, size * rows.weapon, size, size, -size * 0.7, -size, size * 2, size * 2);
+    if (host.kind !== "mutant" && host.muzzle > 0.05) {
+      ctx.globalAlpha = Math.min(1, host.muzzle);
+      ctx.fillStyle = "#ffb703"; ctx.fillRect(size * 1.1, -4, size * 0.35, 8);
+      ctx.fillStyle = "#fff4c2"; ctx.fillRect(size * 1.1, -2, size * 0.2, 4);
+      ctx.globalAlpha = 1;
     }
+    if (host.kind === "enforcer") {
+      const lab = this.assets.image("lab_props");
+      if (lab) ctx.drawImage(lab, 72, 0, 24, 36, host.radius * 0.48, -host.radius * 1.15, 16, host.radius * 2.3);
+    }
+    ctx.restore();
+    if (host.possessed && host.alive) this.drawStaminaBar(ctx, host, time);
+    if (host.isTrainingDummy && host.alive) {
+      ctx.save(); ctx.setLineDash([4, 6]); ctx.lineDashOffset = time * 12;
+      ctx.strokeStyle = "rgba(230, 196, 85, 0.5)"; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.arc(host.position.x, host.position.y, host.radius + 9, 0, TAU); ctx.stroke(); ctx.restore();
+    }
+  }
+
+  private drawSlime(ctx: CanvasRenderingContext2D, world: World, time: number): void {
+    if (this.slimeLevel !== world.level || time < this.slimeTime) {
+      this.slime = []; this.slimeClock = 0; this.slimeWasMoving = false; this.slimeLevel = world.level;
+    }
+    const dt = Math.min(0.1, Math.max(0, time - this.slimeTime));
+    this.slimeTime = time;
+    for (const drop of this.slime) drop.life -= dt;
+    this.slime = this.slime.filter((drop) => drop.life > 0);
+    const spore = world.spore;
+    const moving = world.result === "alive" && spore.state === "free" && Math.hypot(spore.velocity.x, spore.velocity.y) > 1;
+    const add = (x: number, y: number, radius: number, stretch: number, angle: number): void => {
+      this.slime.push({ x, y, radius, maxLife: 0.7, life: 0.7, color: Math.random() < 0.5 ? "#00aa55" : "#00ff88", stretch, angle });
+    };
+    if (moving) {
+      const len = Math.hypot(spore.velocity.x, spore.velocity.y);
+      this.slimeDir = { x: spore.velocity.x / len, y: spore.velocity.y / len };
+      this.slimeClock += dt;
+      if (this.slimeClock >= 0.05) {
+        this.slimeClock %= 0.05;
+        add(spore.position.x, spore.position.y, 1.5 + Math.random() * 1.5, 1, 0);
+      }
+    } else {
+      this.slimeClock = 0;
+      if (this.slimeWasMoving && spore.state === "free") {
+        const angle = Math.atan2(this.slimeDir.y, this.slimeDir.x);
+        for (const offset of [4, 9]) add(spore.position.x - this.slimeDir.x * offset, spore.position.y - this.slimeDir.y * offset, 1.5, 2, angle);
+      }
+    }
+    this.slimeWasMoving = moving;
+    ctx.save();
+    for (const drop of this.slime) {
+      const fade = drop.life / drop.maxLife;
+      ctx.globalAlpha = fade * 0.75; ctx.fillStyle = drop.color;
+      ctx.beginPath(); ctx.ellipse(drop.x, drop.y, drop.radius * fade * drop.stretch, drop.radius * fade, drop.angle, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
   }
 
   /** Cyan afterimages and white wind streaks behind a sprinting host. */
   private drawSprintTrail(
     ctx: CanvasRenderingContext2D,
     host: Host,
-    image: CanvasImageSource | undefined,
+    sheet: SpriteSheet,
     time: number,
   ): void {
-    const size = host.radius * 4.4;
+    const scale = 2;
     for (const ghost of host.afterimages) {
       const fade = clamp(ghost.life / 0.25, 0, 1);
       ctx.save();
       ctx.globalAlpha = 0.45 * fade;
       ctx.translate(ghost.x, ghost.y);
-      ctx.rotate(ghost.facing);
-      if (image) {
-        ctx.drawImage(image, -size / 2, -size / 2, size, size);
-      }
+      ctx.save();
+      ctx.scale(scale, scale);
+      const track = ghost.walkDir === "down" ? "walk_down" : ghost.walkDir === "up" ? "walk_up" : "walk_side";
+      sheet.draw(ctx, track, ghost.walkPhase, 0, 0, ghost.walkDir === "side" && Math.cos(ghost.facing) < 0);
+      ctx.restore();
       // Bioluminescent tint over the ghost body.
       ctx.globalCompositeOperation = "lighter";
       ctx.fillStyle = rgba("#00E5FF", 0.35 * fade);
@@ -774,10 +944,6 @@ export class Renderer {
       );
     }
 
-    for (const host of world.hosts) {
-      if (host.alive && host.possessed) drawHostStatus(ctx, host, time);
-    }
-
     for (const whisper of world.whispers) {
       drawWhisper(ctx, whisper.text, whisper.x, whisper.y, whisper.life, whisper.maxLife);
     }
@@ -858,7 +1024,7 @@ export class Renderer {
       ctx.font = FONT(16, 700);
       fillTextShadow(ctx, "PARASITIC FLESH", 184, 86, "#eafff3");
       ctx.font = FONT(11, 600);
-      const subtitle = world.mode === "tutorial" ? "PROVING GROUND // INDUCTION" : "SECTOR 4 // LIVE CONTAINMENT";
+      const subtitle = world.mode === "tutorial" ? "PROVING GROUND // INDUCTION" : `FLOOR ${world.dungeon?.run.label ?? "1-1"} // DNA ${world.dungeon?.run.biomass ?? 0}`;
       fillTextShadow(ctx, subtitle, 184, 104, "rgba(0, 255, 136, 0.62)");
     }
 
@@ -867,29 +1033,23 @@ export class Renderer {
     let countValue = String(world.enemiesRemaining).padStart(2, "0");
     let countColor = "#ff5a5a";
     if (tutorial) {
-      if (tutorial.phase === 2) {
-        countLabel = "TARGETS";
-        countValue = String(world.targetsRemaining).padStart(2, "0");
-        countColor = "#ffc94a";
-      } else if (tutorial.phase === 4) {
-        countLabel = "HOSTILES";
-        countValue = String(world.enemiesRemaining).padStart(2, "0");
-        countColor = "#ff5a5a";
-      } else {
-        countLabel = "CHAMBER";
-        countValue = `${String(tutorial.phase + 1).padStart(2, "0")} / 07`;
-        countColor = "#8dffca";
-      }
+      // The room counter is fixed top-right for the whole Proving Ground.
+      countLabel = "CHAMBER";
+      countValue = `${String(tutorial.phase + 1).padStart(2, "0")} / ${String(TUTORIAL_ROOMS.length).padStart(2, "0")}`;
+      countColor = "#8dffca";
     }
-    ctx.textAlign = "right";
-    ctx.font = FONT(27, 700);
-    fillTextShadow(ctx, countValue, w - 24, 38, countColor);
-    ctx.font = FONT(11, 700);
-    fillTextShadow(ctx, countLabel, w - 24, 55, "rgba(200, 230, 220, 0.58)");
+    if (world.dungeon) drawMinimap(ctx, world.dungeon, w, time);
+    else {
+      ctx.textAlign = "right";
+      ctx.font = FONT(27, 700);
+      fillTextShadow(ctx, countValue, w - 24, 38, countColor);
+      ctx.font = FONT(11, 700);
+      fillTextShadow(ctx, countLabel, w - 24, 55, "rgba(200, 230, 220, 0.58)");
+    }
 
     // --- Center status: grace, bullet-time --------------------------------
     // The tutorial banner sits top-centre, so status lines drop below it.
-    let centerY = objective ? 122 : 31;
+    let centerY = objective ? 140 : 31;
     if (world.grace > 0.05) {
       ctx.textAlign = "center";
       ctx.font = FONT(14, 700);
@@ -910,6 +1070,10 @@ export class Renderer {
       ctx.fillRect(w / 2 - 90, centerY + 8, 180 * clamp(world.timeScale, 0, 1), 2);
     }
 
+    if (world.dungeon?.notice) {
+      ctx.textAlign = "center"; ctx.font = FONT(20, 700);
+      fillTextShadow(ctx, "CHAMBER SECURED", w / 2, 65, "#00ff88");
+    }
     // --- Neural link calibration warning above the host
     if (possessed && possessed.calibrateFlash > 0) {
       const p = world.camera.worldToScreen(possessed.position);
@@ -930,8 +1094,8 @@ export class Renderer {
 
     // --- Tutorial chamber prompt -----------------------------------------
     if (objective) {
-      // The corner dial is always visible, so the chamber banner starts below it.
-      this.drawTutorialPrompt(objective, w, 24);
+      // Pinned to the top centre, clear of the corner dial and room counter.
+      this.drawTutorialPrompt(objective, w, 28);
     }
 
     // --- Body plate -------------------------------------------------------
@@ -967,7 +1131,7 @@ export class Renderer {
 
       let gx = panelX + 18;
       for (const graft of possessed.grafts) {
-        const label = graft === "sidearm" ? "SIDEARM" : graft === "dorsalShield" ? "PLATING" : "STRIDE";
+        const label = graft === "dorsalShield" ? "PLATING" : "STRIDE";
         ctx.font = FONT(9, 700);
         const chipW = ctx.measureText(label).width + 12;
         ctx.fillStyle = "rgba(0, 255, 136, 0.1)";
@@ -1058,6 +1222,11 @@ export class Renderer {
       ctx.moveTo(mx + d, my - d);
       ctx.lineTo(mx + d + 4, my - d - 4);
       ctx.stroke();
+    }
+    if (world.dungeon?.draft || world.tutorial?.draft) this.drawMutationDraft(w, h);
+    if (world.dungeon && world.dungeon.fade > 0) {
+      ctx.fillStyle = `rgba(0,0,0,${Math.min(1, world.dungeon.fade / 0.4)})`;
+      ctx.fillRect(0, 0, w, h);
     }
   }
 
@@ -1186,20 +1355,23 @@ export class Renderer {
     ctx.textBaseline = "alphabetic";
   }
 
+  /**
+   * Top-centre instruction card. Its width is bounded by the 150px lifespan
+   * dial on the left and the room counter on the right, so every line stays
+   * inside the safe band even on a small window.
+   */
   private drawTutorialPrompt(objective: TutorialObjective, width: number, y: number): void {
     const ctx = this.ctx;
-    // The 150px corner dial and the right-hand level counter both stay clear.
-    const panelW = Math.max(240, Math.min(760, width - 368));
+    const panelW = Math.min(760, Math.max(200, width - 380));
     const panelH = 86;
-    // Centred, but never under the gauge on narrow windows.
-    const x = Math.max(184, (width - panelW) / 2);
+    const x = Math.round((width - panelW) / 2);
     ctx.save();
     ctx.globalAlpha = objective.alpha;
 
-    ctx.fillStyle = "rgba(10, 15, 24, 0.85)";
+    ctx.fillStyle = "rgba(10, 15, 24, 0.9)";
     roundedRect(ctx, x, y, panelW, panelH, 4);
     ctx.fill();
-    ctx.strokeStyle = "rgba(0, 255, 136, 0.9)";
+    ctx.strokeStyle = "#00FF88";
     ctx.lineWidth = 1;
     roundedRect(ctx, x, y, panelW, panelH, 4);
     ctx.stroke();
@@ -1229,10 +1401,11 @@ export class Renderer {
     ctx.font = FONT(13, 600);
     fillTextShadow(ctx, `▸ ${objective.objective}`, x + 20, y + 70, "rgba(255, 201, 74, 0.92)");
 
-    // Seven-segment chamber progress.
+    // Five-segment chamber progress.
+    const segments = TUTORIAL_ROOMS.length;
     const segY = y + panelH - 8;
-    for (let i = 0; i < 7; i += 1) {
-      const sx = x + panelW - 20 - (7 - i) * 14;
+    for (let i = 0; i < segments; i += 1) {
+      const sx = x + panelW - 20 - (segments - i) * 14;
       ctx.fillStyle = i < objective.chamber - 1
         ? "rgba(0, 255, 136, 0.32)"
         : i === objective.chamber - 1

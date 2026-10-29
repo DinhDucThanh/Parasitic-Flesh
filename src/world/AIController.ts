@@ -20,6 +20,15 @@ const GUN_WINDUP = 0.45;
  */
 export class AIController {
   update(host: Host, dt: number, world: World): void {
+    // Sealed chambers: hostiles in a chamber the player has not entered stay
+    // completely dormant, staring at the bulkhead until their door opens.
+    if (world.tutorial && world.tutorial.roomAt(host.position.x) !== world.playerRoom) {
+      host.windup = 0;
+      host.windupKind = null;
+      host.aimLaser = 0;
+      host.moving = 0;
+      return;
+    }
     if (host.kind === "mutant") {
       this.updateChimera(host, dt, world);
       return;
@@ -176,7 +185,7 @@ export class AIController {
       }
     }
 
-    host.move({ x: steerX, y: steerY }, dt, host.speed);
+    host.move({ x: steerX, y: steerY }, dt, host.speed, world.bounds);
     host.moving = Math.max(host.moving, 0.4);
 
     if (!this.canAttack(host, dist, ai)) return;

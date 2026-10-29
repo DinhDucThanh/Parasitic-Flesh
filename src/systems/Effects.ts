@@ -74,6 +74,7 @@ export class Hazard {
   life: number;
   alive = true;
   phase = Math.random() * TAU;
+  hurtsPlayer = false;
 
   constructor(x: number, y: number, radius: number, life: number, dps: number) {
     this.position = { x, y };

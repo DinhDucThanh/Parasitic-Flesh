@@ -7,7 +7,6 @@ import { Projectile } from "./Projectile";
 
 interface GraftTimers {
   stride: number;
-  sidearm: number;
 }
 
 function segmentHitsCircle(a: Vec2, b: Vec2, center: Vec2, radius: number): boolean {
@@ -132,12 +131,23 @@ export class CombatSystem {
       const speed = host.dashSpeed > 0 ? host.dashSpeed : 820;
       // Never overshoot the declared distance budget: the last step is clipped.
       const step = Math.min(speed * dt, host.dashDistanceLeft);
+      const fromX = host.position.x;
+      const fromY = host.position.y;
       host.position.x += host.dashDir.x * step;
       host.position.y += host.dashDir.y * step;
       host.dashDistanceLeft = Math.max(0, host.dashDistanceLeft - step);
       if (host.dashDistanceLeft <= 1e-3) host.dashTime = 0;
       host.moving = 1;
-      clampToArenaHost(host);
+      clampToArenaHost(host, world);
+      // A burst must never tunnel through a bulkhead, shutter or the armored
+      // barricade: the body slams into the seam and the lunge ends there.
+      if (world.segmentBlocked({ x: fromX, y: fromY }, host.position)) {
+        host.position.x = fromX;
+        host.position.y = fromY;
+        host.dashTime = 0;
+        host.dashDistanceLeft = 0;
+        spawnBurst(world.particles, host.position.x + host.dashDir.x * host.radius, host.position.y + host.dashDir.y * host.radius, 5, 130, "#ffe089", 1.8, 0.25);
+      }
 
       // Sharp claw streaks trailing along the lunge vector.
       if (Math.random() < 0.85) {
@@ -189,11 +199,15 @@ export class CombatSystem {
     for (const p of world.projectiles) {
       p.update(dt);
       if (!p.alive) continue;
+      if (world.dungeon?.hitProps(p.previous, p.position, p.damage)) {
+        p.alive = false;
+        continue;
+      }
       if (
         p.position.x < ARENA.wall ||
-        p.position.x > ARENA.width - ARENA.wall ||
+        p.position.x > world.bounds.width - ARENA.wall ||
         p.position.y < ARENA.wall ||
-        p.position.y > ARENA.height - ARENA.wall ||
+        p.position.y > world.bounds.height - ARENA.wall ||
         world.segmentBlocked(p.previous, p.position)
       ) {
         p.alive = false;
@@ -274,6 +288,10 @@ export class CombatSystem {
   private updateHazards(dt: number, world: World): void {
     for (const hazard of world.hazards) {
       hazard.update(dt);
+      if (hazard.hurtsPlayer && Math.hypot(world.playerPoint.x - hazard.position.x, world.playerPoint.y - hazard.position.y) < hazard.radius) {
+        if (world.possessed) world.damagePlayerHost(world.possessed, 1);
+        else if (world.spore.isExposed) world.killSpore("TOXIC BARREL");
+      }
       for (const host of world.hosts) {
         if (!host.alive || host.possessed) continue;
         if (host.distanceTo(hazard.position) > hazard.radius + host.radius * 0.5) continue;
@@ -290,7 +308,7 @@ export class CombatSystem {
     if (host.grafts.size === 0) return;
     let timers = this.timers.get(host);
     if (!timers) {
-      timers = { stride: 0.12, sidearm: 0.5 };
+      timers = { stride: 0.12 };
       this.timers.set(host, timers);
     }
 
@@ -305,39 +323,6 @@ export class CombatSystem {
       }
     }
 
-    if (host.grafts.has("sidearm")) {
-      timers.sidearm -= dt;
-      if (timers.sidearm <= 0) {
-        const target = world.nearestEnemy(host.position, 620);
-        if (target) {
-          timers.sidearm = 0.95;
-          const angle = Math.atan2(target.position.y - host.position.y, target.position.x - host.position.x) + Math.PI / 2;
-          const ox = Math.cos(angle) * (host.radius + 4);
-          const oy = Math.sin(angle) * (host.radius + 4);
-          for (let i = 0; i < 2; i += 1) {
-            const a = Math.atan2(target.position.y - host.position.y, target.position.x - host.position.x) + rand(-0.035, 0.035);
-            world.projectiles.push(
-              new Projectile(
-                host.position.x + ox,
-                host.position.y + oy,
-                Math.cos(a) * 1400,
-                Math.sin(a) * 1400,
-                1.5,
-                "player",
-                "sidearm",
-                "#9dffcf",
-              ),
-            );
-          }
-          host.recoil = Math.max(host.recoil, 0.5);
-          host.muzzle = 1;
-          spawnBurst(world.particles, host.position.x + ox, host.position.y + oy, 3, 150, "#9dffcf", 1.4, 0.25);
-          world.sfx.play("shot");
-        } else {
-          timers.sidearm = 0.2;
-        }
-      }
-    }
   }
 
   /** Radial acid detonation used by ejection and meltdowns. */
@@ -359,7 +344,7 @@ export class CombatSystem {
       const dir = normalize({ x: host.position.x - x, y: host.position.y - y });
       host.position.x += dir.x * BLAST.knockback * falloff;
       host.position.y += dir.y * BLAST.knockback * falloff;
-      clampToArenaHost(host);
+      clampToArenaHost(host, world);
       spawnBurst(world.particles, host.position.x, host.position.y, 8, 260, "#b6ff3d", 3, 0.6);
       if (!host.alive) world.killHost(host);
     }
@@ -370,8 +355,8 @@ export class CombatSystem {
   }
 }
 
-function clampToArenaHost(host: Host): void {
+function clampToArenaHost(host: Host, world: World): void {
   const min = ARENA.wall + host.radius;
-  host.position.x = clamp(host.position.x, min, ARENA.width - min);
-  host.position.y = clamp(host.position.y, min, ARENA.height - min);
+  host.position.x = clamp(host.position.x, min, world.bounds.width - min);
+  host.position.y = clamp(host.position.y, min, world.bounds.height - min);
 }

@@ -18,7 +18,7 @@ export const WHISPERS: Record<HostKind, string[]> = {
     "Her birthday was today.",
     "Please don't let them open Sector 4...",
     "I only took this shift for the dental plan.",
-    "The turrets stopped answering at 0300.",
+    "The bulkheads stopped answering at 0300.",
   ],
   enforcer: [
     "They said the suits were rated for this.",
@@ -55,28 +55,28 @@ export const INCIDENT_LOGS: IncidentLog[] = [
     id: "log_03",
     title: "GRAFT PROTOCOL",
     body:
-      "When the spore abandons a body, its rootlets tear free with a signature trait still attached. " +
-      "The next host inherits that trait. Every jump makes a worse, faster, better animal.",
+      "Enforcer plating and chimera acid stride can transfer to the next host. " +
+      "Security bodies leave no graft behind.",
   },
   {
     id: "log_04",
     title: "CORPSE CANNON",
     body:
-      "A vacated host detonates on a 140px acid radius. The blast strips plating. " +
+      "Holding and releasing R spends a charge to detonate the host in a 200px acid nova. Silent switches do not explode. " +
       "Field reports describe the sound as 'a wet door closing', followed by no further reports.",
   },
   {
     id: "log_05",
     title: "MELTDOWN",
     body:
-      "A worn body rejects the passenger in ten to sixteen seconds. Damage accelerates the collapse. " +
+      "A worn body's lifespan depends on its specimen. Damage accelerates the collapse. " +
       "At zero, the host folds inward and crushes whatever is still inside. The spore has no second body.",
   },
   {
     id: "log_06",
     title: "SECTOR 4 — CONTAINMENT BREACHED",
     body:
-      "The wing is quiet. Eight bodies are no longer standing, and one of them is still moving. " +
+      "The wing is quiet. The rooms have fallen silent, and one body is still moving. " +
       "Recommendation: do not record this entry. Recommendation: do not remember the whispers.",
   },
 ];

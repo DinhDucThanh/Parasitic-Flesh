@@ -1,24 +1,14 @@
-/**
- * THE ONLY FILE YOU NEED TO EDIT TO OVERRIDE PROCEDURAL ART OR AUDIO.
- *
- * Drop a file at the matching path under `public/` and it is picked up on the
- * next page load. Missing files are expected and simply fall back to the
- * procedural renderer / synth; nothing in game logic changes either way.
- *
- * Example: drop `public/assets/sprites/spore.png` to replace the procedural
- * amoeba with your own sprite. Recommended sprite sizes:
- *   spore          64x64   (centered, transparent background)
- *   host_security  96x96
- *   host_enforcer  112x112
- *   host_mutant    96x96
- *   vfx_explosion  256x256 (center = blast origin)
- */
+/** Sprite sheets are generated into public/assets; audio samples are optional. */
 export const ASSET_REGISTRY = {
   sprites: {
-    spore: "assets/sprites/spore.png",
-    host_security: "assets/sprites/host_security.png",
-    host_enforcer: "assets/sprites/host_enforcer.png",
-    host_mutant: "assets/sprites/host_mutant.png",
+    spore: "assets/spore.png",
+    host_security: "assets/guard-rig.png",
+    host_enforcer: "assets/enforcer-rig.png",
+    host_mutant: "assets/mutant-rig.png",
+    lab_props: "assets/lab-props.png",
+    tileset: "assets/tileset.png",
+    props: "assets/props.png",
+    projectiles: "assets/projectiles.png",
     vfx_explosion: "assets/sprites/vfx_explosion.png",
   },
   audio: {

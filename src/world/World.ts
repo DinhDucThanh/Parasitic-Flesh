@@ -1,7 +1,7 @@
 import type { SfxSynth } from "../assets/SfxSynth";
-import { clampToArena, resolveCircleWalls, segmentIntersectsRect, type Rect } from "../core/arena";
+import { clampToArena, resolveCircleWalls, segmentIntersectsRect, type Bounds, type Rect } from "../core/arena";
 import type { Camera } from "../core/Camera";
-import { BLAST, BULLET_TIME, DECAY, SPAWN_GRACE } from "../core/config";
+import { ARENA, BLAST, BULLET_TIME, DECAY, SPAWN_GRACE } from "../core/config";
 import type { Input } from "../core/Input";
 import { distance, type Vec2 } from "../core/math";
 import { Host, GRAFT_LABEL, type GraftKind, type HostKind } from "../entities/Host";
@@ -15,6 +15,7 @@ import type { Projectile } from "../systems/Projectile";
 import { LevelManager } from "../levels/LevelManager";
 import type { LevelConfig, LevelHostType } from "../levels/Level";
 import { AIController } from "./AIController";
+import { RoomManager } from "../dungeon/RoomManager";
 import { LoreLog, WHISPERS } from "./Lore";
 import { buildTutorialLayout, Door, Tutorial, type TutorialObjective } from "./Tutorial";
 
@@ -46,7 +47,7 @@ const HOST_BY_TYPE: Record<LevelHostType, HostKind> = {
  * gameplay system is updated from here in a fixed, readable order.
  *
  * Two level modes share the same systems:
- *   tutorial - seven gated chambers, dormant dummies, blast doors, targets.
+ *   tutorial - five room-locked chambers, dormant dummies, blast doors, targets.
  *   standard - the open sector with eight hostile hosts.
  */
 export class World {
@@ -66,7 +67,10 @@ export class World {
   readonly doors: Door[] = [];
   readonly targets: TrainingTarget[] = [];
   tutorial: Tutorial | null = null;
+  dungeon: RoomManager | null = null;
   mode: GameMode = "standard";
+  /** Playable extent of the loaded level; every clamp and projectile uses it. */
+  bounds: Bounds = { width: ARENA.width, height: ARENA.height };
 
   projectiles: Projectile[] = [];
   effects: Explosion[] = [];
@@ -89,6 +93,11 @@ export class World {
   private clearTimer = -1;
   /** Set when a tutorial death must roll back to the chamber checkpoint. */
   private pendingRespawn: string | null = null;
+  /** Tutorial camera room state: which chamber is framed and its hand-off. */
+  private cameraRoom = -1;
+  private roomPan = 1;
+  private panFrom: Vec2 = { x: 0, y: 0 };
+  private panFromRoom = 0;
 
   constructor(
     readonly input: Input,
@@ -109,6 +118,7 @@ export class World {
     const mode: GameMode = config.preset === "tutorial" ? "tutorial" : "standard";
     this.clearRun(mode);
     this.level = config;
+    this.bounds = { width: config.arenaBounds.width, height: config.arenaBounds.height };
 
     if (mode === "tutorial") {
       const layout = buildTutorialLayout();
@@ -117,10 +127,9 @@ export class World {
       this.tutorial = new Tutorial();
       // jumpTo(0) also places the spore and seeds the first chamber.
       this.tutorial.jumpTo(0, this);
-      this.decals.reset("tutorial");
+      this.decals.reset("tutorial", this.bounds.width, this.bounds.height, true);
     } else {
-      this.decals.reset("standard");
-      this.grace = SPAWN_GRACE;
+      this.dungeon = new RoomManager(this);
     }
 
     config.hosts.forEach((spawn, index) => {
@@ -147,10 +156,12 @@ export class World {
       }
     });
 
-    this.spore.reset(config.sporeSpawn);
-    const view = config.cameraView ?? { width: 1560, height: 880 };
-    this.camera.setViewSize(view.width, view.height);
-    this.camera.snapTo(this.focusPoint);
+    if (mode === "tutorial") {
+      this.spore.reset(config.sporeSpawn);
+      const view = config.cameraView ?? { width: 1560, height: 880 };
+      this.camera.setViewSize(view.width, view.height);
+      this.snapTutorialCamera(0);
+    }
   }
 
   /** Start the Proving Ground. The menu's tutorial entry lands here. */
@@ -175,6 +186,7 @@ export class World {
     this.doors.length = 0;
     this.targets.length = 0;
     this.tutorial = null;
+    this.dungeon = null;
     this.projectiles = [];
     this.effects = [];
     this.particles = [];
@@ -194,6 +206,9 @@ export class World {
     this.heartbeat = 0;
     this.clearTimer = -1;
     this.pendingRespawn = null;
+    this.cameraRoom = -1;
+    this.roomPan = 1;
+    this.panFrom = { x: 0, y: 0 };
     this.stats.hijacks = 0;
     this.stats.kills = 0;
     this.hijack.reset();
@@ -203,12 +218,18 @@ export class World {
     const dt = Math.min(rawDt, 1 / 30);
 
     if (this.result !== "alive") {
+      if (this.result === "dead") this.spore.tick(dt);
       for (const door of this.doors) door.update(dt);
       this.updateEffects(dt);
-      this.camera.update(dt, this.focusPoint);
+      this.updateCamera(dt);
       return;
     }
 
+    if (this.dungeon?.draft || this.dungeon?.transitioning) {
+      this.dungeon.update(dt);
+      this.updateCamera(dt);
+      return;
+    }
     this.elapsed += dt;
     this.damageFlash = Math.max(0, this.damageFlash - dt * 2.4);
     this.hitMarker = Math.max(0, this.hitMarker - dt * 7);
@@ -221,7 +242,7 @@ export class World {
     if (this.clearTimer >= 0) {
       this.clearTimer -= dt;
       this.updateEffects(dt);
-      this.camera.update(dt, this.focusPoint);
+      this.updateCamera(dt);
       if (this.clearTimer <= 0) {
         this.result = "won";
         this.sfx.play("win");
@@ -234,7 +255,7 @@ export class World {
     if (this.hitStop > 0) {
       this.hitStop -= dt;
       this.updateEffects(dt * 0.35);
-      this.camera.update(dt, this.focusPoint);
+      this.updateCamera(dt);
       return;
     }
 
@@ -257,18 +278,85 @@ export class World {
     this.constrainBodies();
     this.syncPassenger();
     this.updateTargets(dtSim);
-    if (this.result === "alive") this.tutorial?.update(dt, this);
+    if (this.result === "alive") { this.tutorial?.update(dt, this); this.dungeon?.update(dt); }
     if (this.flushRespawn()) return;
     this.updateEffects(dtSim);
     this.updateWhispers(dt);
     this.updateHeartbeat(dt);
     if (this.result === "alive") this.checkClear();
+    this.updateCamera(dt);
+  }
+
+  /** Room-locked in the Proving Ground, smoothed follow in the open sector. */
+  private updateCamera(dt: number): void {
+    if (this.mode === "tutorial" && this.tutorial) {
+      this.syncTutorialCamera(dt);
+      this.camera.update(dt, this.roomPan < 1 ? null : this.focusPoint);
+      return;
+    }
+    // A zoomed-in viewport can be smaller than a dungeon room; following its
+    // center would leave players near the edges off-screen during lockdown.
     this.camera.update(dt, this.focusPoint);
+  }
+
+  /**
+   * Five sealed chambers: the view holds one room and hands off to the next
+   * with a half-second pan the moment the player crosses the threshold.
+   */
+  private syncTutorialCamera(dt: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    const room = tutorial.roomAt(this.playerPoint.x);
+    if (room !== this.cameraRoom) {
+      const first = this.cameraRoom < 0;
+      const from = first ? room : this.cameraRoom;
+      this.panFrom = first ? tutorial.roomCenter(room) : { x: this.camera.x, y: this.camera.y };
+      this.panFromRoom = from;
+      this.cameraRoom = room;
+      this.roomPan = first ? 1 : 0;
+      // During the hand-off the view may span both rooms; it tightens after.
+      this.camera.setBounds(first ? tutorial.roomRect(room) : this.panBounds(from, room));
+      tutorial.onEnterRoom(room, this);
+    }
+
+    if (this.roomPan < 1) {
+      this.roomPan = Math.min(1, this.roomPan + dt * 2);
+      const t = this.roomPan * this.roomPan * (3 - 2 * this.roomPan);
+      const to = this.focusPoint;
+      this.camera.setCenter({
+        x: this.panFrom.x + (to.x - this.panFrom.x) * t,
+        y: this.panFrom.y + (to.y - this.panFrom.y) * t,
+      });
+      if (this.roomPan >= 1) this.camera.setBounds(tutorial.roomRect(room));
+      return;
+    }
+    this.camera.setBounds(tutorial.roomRect(room));
+  }
+
+  /** Bounding box that contains two adjacent chambers, used only while panning. */
+  private panBounds(a: number, b: number): Rect {
+    const ra = this.tutorial?.roomRect(a) ?? { x: 0, y: 0, w: 1, h: 1 };
+    const rb = this.tutorial?.roomRect(b) ?? ra;
+    const x = Math.min(ra.x, rb.x);
+    return { x, y: 0, w: Math.max(ra.x + ra.w, rb.x + rb.w) - x, h: ra.h };
+  }
+
+  private snapTutorialCamera(room: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    this.cameraRoom = room;
+    this.roomPan = 1;
+    this.panFrom = tutorial.roomCenter(room);
+    this.camera.setBounds(tutorial.roomRect(room));
+    this.camera.snapTo(this.focusPoint);
   }
 
   private updateHosts(dtReal: number, dtSim: number): void {
     for (const host of this.hosts) {
-      if (!host.alive) continue;
+      if (!host.alive) {
+        if (host.dropTime >= 0 && host.dropTime < 1.2) host.dropTime += dtReal;
+        continue;
+      }
       // I-frames tick on real time so bullet-time cannot stretch them.
       host.tickDefense(dtReal);
       host.tickAfterimages(dtReal);
@@ -300,18 +388,19 @@ export class World {
 
   private constrainBodies(): void {
     const solids: Rect[] = this.walls.slice();
+    if (this.dungeon) solids.push(...this.dungeon.solids);
     for (const door of this.doors) {
       if (door.solid) solids.push(door.rect);
     }
 
     if (this.spore.state !== "flying") {
       resolveCircleWalls(this.spore.position, this.spore.radius, solids);
-      clampToArena(this.spore.position, this.spore.radius);
+      clampToArena(this.spore.position, this.spore.radius, this.bounds);
     }
     for (const host of this.hosts) {
       if (!host.alive) continue;
       resolveCircleWalls(host.position, host.radius, solids);
-      clampToArena(host.position, host.radius);
+      clampToArena(host.position, host.radius, this.bounds);
     }
   }
 
@@ -353,7 +442,7 @@ export class World {
   }
 
   private checkClear(): void {
-    if (this.mode !== "standard") return;
+    if (this.mode !== "standard" || this.dungeon) return;
     if (this.result !== "alive" || this.clearTimer >= 0) return;
     // Level configs own the win condition; fall back to a full sweep.
     const objectives = this.level?.objectives;
@@ -409,7 +498,8 @@ export class World {
   }
 
   killHost(host: Host): void {
-    if (!host.alive) return;
+    if (host.deathHandled) return;
+    host.deathHandled = true;
     host.alive = false;
     host.possessed = false;
     if (!host.isTrainingDummy) this.stats.kills += 1;
@@ -455,6 +545,7 @@ export class World {
     this.result = "dead";
     this.deathCause = cause;
     this.spore.state = "free";
+    this.spore.alive = false;
     this.decals.stampBlood(this.spore.position.x, this.spore.position.y, 34);
     spawnBurst(this.particles, this.spore.position.x, this.spore.position.y, 26, 400, "#00ff88", 3, 0.9);
     spawnBurst(this.particles, this.spore.position.x, this.spore.position.y, 10, 240, "#a8252f", 4, 0.8);
@@ -542,6 +633,7 @@ export class World {
     // A clean rebuild keeps geometry, bodies and charges consistent.
     this.applyLevel(config);
     this.tutorial?.jumpTo(phase, this);
+    this.snapTutorialCamera(phase);
     this.deathCause = cause;
     this.damageFlash = 1;
     this.grace = 0.7;
@@ -553,7 +645,7 @@ export class World {
     const door = this.doorById(id);
     if (!door || door.kind === "reinforced" || door.target === 1) return;
     door.target = 1;
-    this.sfx.play("uiClick");
+    this.sfx.play("door");
   }
 
   doorById(id: string): Door | undefined {
@@ -592,6 +684,7 @@ export class World {
     for (const door of this.doors) {
       if (door.solid && segmentIntersectsRect(a, b, door.rect)) return true;
     }
+    if (this.dungeon?.solids.some(rect => segmentIntersectsRect(a, b, rect))) return true;
     return false;
   }
 
@@ -636,12 +729,23 @@ export class World {
   }
 
   get focusPoint(): Vec2 {
-    const focus = this.possessed?.position ?? this.spore.position;
-    // The seven chambers share one horizontal band. Locking the camera's Y to
-    // its center keeps the floor, ceiling and doors all readable while the
-    // player moves through the proving ground.
-    if (this.mode === "tutorial") return { x: focus.x, y: 702 };
-    return focus;
+    return this.possessed?.position ?? this.spore.position;
+  }
+
+  /** Chamber the player is standing in, or -1 outside a room-locked level. */
+  get playerRoom(): number {
+    return this.mode === "tutorial" && this.tutorial ? this.tutorial.roomAt(this.playerPoint.x) : -1;
+  }
+
+  /**
+   * Everything outside this rectangle is masked to void by the renderer.
+   * During a hand-off it spans both chambers, so the pan never clips the room
+   * being left; afterwards it is exactly the active chamber.
+   */
+  get cameraMask(): Rect | null {
+    if (this.mode !== "tutorial" || !this.tutorial || this.cameraRoom < 0) return null;
+    if (this.roomPan < 1) return this.panBounds(this.panFromRoom, this.cameraRoom);
+    return this.tutorial.roomRect(this.cameraRoom);
   }
 
   get mouseWorld(): Vec2 {

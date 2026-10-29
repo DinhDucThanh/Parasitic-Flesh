@@ -1,6 +1,7 @@
 import type { SfxSynth } from "../assets/SfxSynth";
-import { HOST_SPECS, Host, type HostKind } from "../entities/Host";
-import { drawHost, rgba } from "../render/ProceduralArt";
+import { HOST_RIG_ROWS, HOST_SPECS, type HostKind } from "../entities/Host";
+import type { AssetManager } from "../assets/AssetManager";
+import { rgba } from "../render/ProceduralArt";
 import { INCIDENT_LOGS, type LoreLog } from "../world/Lore";
 import {
   FONT,
@@ -19,7 +20,7 @@ import {
 
 export type CodexTab = 0 | 1 | 2 | 3 | 4;
 
-const TAB_LABELS = ["CONTROLS", "BIOLOGY", "SPECIMENS", "GRAFTING", "INCIDENT LOGS"];
+const TAB_LABELS = ["CONTROLS", "BIOLOGY", "SPECIMENS", "FACILITIES", "INCIDENT LOGS"];
 
 const KIND_COLOR: Record<HostKind, string> = {
   security: "#6da4dd",
@@ -35,12 +36,10 @@ const KIND_COLOR: Record<HostKind, string> = {
 export class CodexUI {
   private tab: CodexTab = 0;
   private readonly hover = new HoverTracker();
-  /** One inert host per kind, posed each frame for the containment previews. */
-  private readonly previews = new Map<HostKind, Host>();
-
   constructor(
     private readonly sfx: SfxSynth,
     private readonly getLore: () => LoreLog,
+    private readonly assets: AssetManager,
   ) {}
 
   open(tab: CodexTab = this.tab): void {
@@ -263,16 +262,18 @@ export class CodexUI {
       ["MOUSE", "AIM"],
       ["LMB", "FIRE HOST WEAPON"],
       ["HOLD RMB", "SLOW TIME + AIM"],
-      ["RELEASE RMB", "HIJACK / EJECT + DETONATE"],
-      ["TAB / ESC", "OPEN BIO-TERMINAL"],
-      ["R", "RETRY"],
+      ["RELEASE RMB / SPACE", "HIJACK / SILENT SWITCH (3s LINK)"],
+      ["SHIFT", "GLIDE SPRINT // STAMINA"],
+      ["HOLD + RELEASE R", "DETONATE BODY // ONE CHARGE"],
+      ["E / 1–3", "ALTAR / CHOOSE MUTATION"],
+      ["TAB / ESC", "BIO-TERMINAL // T RETRIES"],
     ];
 
     rows.forEach(([bind, action], index) => {
-      const rowY = y + 22 + index * 62;
+      const rowY = y + 18 + index * Math.min(50, Math.max(36, (h - 45) / rows.length));
       if (index % 2 === 0) {
         ctx.fillStyle = "rgba(0, 255, 136, 0.03)";
-        ctx.fillRect(listX, rowY - 22, listW, 54);
+        ctx.fillRect(listX, rowY - 16, listW, 40);
       }
       ctx.font = FONT(12, 700);
       fillTextShadow(ctx, bind, listX + 14, rowY, UI.green);
@@ -285,7 +286,7 @@ export class CodexUI {
     ctx.font = FONT(12, 600);
     fillTextShadow(
       ctx,
-      "ONE HIT OUTSIDE A BODY IS FINAL.",
+      "ONE HIT KILLS AN EXPOSED SPORE; TRAINING RESTARTS THE CHAMBER.",
       x + 12,
       y + h - 16,
       "rgba(255, 120, 120, 0.8)",
@@ -294,12 +295,12 @@ export class CodexUI {
 
   private renderBiology(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
     const cards: Array<[string, string]> = [
-      ["THE SPORE", "One touch outside a body ends the run. Move like it."],
-      ["BULLET-TIME", "Hold RMB. The world crawls; your aim does not."],
-      ["HIJACK", "Release inside the green cone. Take the body whole."],
-      ["DECAY", "Every body is a fuse. The clock never slows."],
-      ["COLLAPSE", "With seconds left, the body starts to reject you."],
-      ["DETONATION", "Leave a body and it becomes a bomb."],
+      ["THE SPORE", "1 HP unhosted; slime leaves a fading trail. Training deaths restart the chamber."],
+      ["HIJACK", "Hold RMB to slow time to 18%; release to leap. The spore perches on the host's head and gains a one-hit bio-shield."],
+      ["KINETIC GLIDE", "Shift: 2.2x speed. 100 stamina drains in 10s; standing still refills it in 5s after a short delay."],
+      ["SILENT SWITCH", "After 3s calibration, hold and release RMB or Space to leave the old body without an explosion."],
+      ["DETONATION", "Hold and release R to spend one of three charges on a 200px acid nova."],
+      ["DECAY", "Lifespan ticks in real time; hits shorten it and a zero timer kills the spore."],
     ];
     const gap = 16;
     const colW = (w - gap) / 2;
@@ -319,20 +320,8 @@ export class CodexUI {
     });
   }
 
-  /** Cached inert host used only for the card previews. */
-  private previewHost(kind: HostKind): Host {
-    let host = this.previews.get(kind);
-    if (!host) {
-      host = new Host(kind, 0, 0);
-      host.aiEnabled = false;
-      this.previews.set(kind, host);
-    }
-    return host;
-  }
-
   /**
-   * The specimen frame renders the SAME procedural model the arena uses, with
-   * a slow weapon sweep and breathing bob so the containment readout is alive.
+   * The specimen frame uses the same pixel sheets as the game world.
    */
   private renderSpecimenModel(
     ctx: CanvasRenderingContext2D,
@@ -343,25 +332,16 @@ export class CodexUI {
     time: number,
     index: number,
   ): void {
-    const host = this.previewHost(kind);
-    host.position.x = 0;
-    host.position.y = 0;
-    host.facing = -Math.PI / 2 + Math.sin(time * 0.6 + index * 1.7) * 0.5;
-    host.walkPhase = time * 2.1 + index;
-    host.moving = 0.1 + (Math.sin(time * 1.5 + index) + 1) * 0.05;
-    host.recoil = 0;
-    host.muzzle = 0;
-    host.flash = 0;
-    host.corruption = 0;
-    host.possessed = false;
-    host.dashTime = 0;
-    host.windup = 0;
-    host.aimLaser = 0;
-    host.shieldFlash = Math.max(0, Math.sin(time * 1.1 + index)) * 0.35;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(scale, scale);
-    drawHost(ctx, host, time);
+    const image = this.assets.image(kind === "security" ? "host_security" : kind === "enforcer" ? "host_enforcer" : "host_mutant");
+    if (!image) return;
+    const size = kind === "security" ? 20 : kind === "enforcer" ? 32 : 28;
+    const rows = HOST_RIG_ROWS[kind];
+    const frame = Math.floor(time * 5 + index) % 4;
+    const display = size * scale * 2;
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(image, frame * size, 0, size, size, x - display / 2, y - display / 2, display, display);
+    ctx.drawImage(image, 0, size * rows.head, size, size, x - display / 2, y - display * 0.8, display, display);
+    ctx.drawImage(image, 0, size * rows.weapon, size, size, x - display * 0.35, y - display / 2, display, display);
     ctx.restore();
   }
 
@@ -495,39 +475,21 @@ export class CodexUI {
   }
 
   private renderGrafting(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
-    ctx.font = FONT(15, 400);
-    const introY = drawParagraph(
-      ctx,
-      "When the spore leaves a body, it tears free with one signature trait attached. The next host keeps it. Chain bodies to build a worse animal.",
-      x,
-      y + 2,
-      w,
-      22,
-      "rgba(220, 245, 235, 0.82)",
-    );
-
-    const rows: Array<[HostKind, string]> = [
-      ["security", "SHOULDER SIDEARM"],
-      ["enforcer", "DORSAL PLATING"],
-      ["mutant", "ACID STRIDE"],
+    const cards: Array<[string, string]> = [
+      ["LOCKDOWN", "Combat doors shut on entry. Red portals warn for 0.85s before each wave; hijacking the last enemy clears it."],
+      ["BARRELS & COVER", "Steel crates break under fire. Toxic barrels explode and leave a four-second acid pool; pillars block shots and lunges."],
+      ["BIO-ALTAR", "Press E nearby: spend a charge, or lose 3 seconds of maximum decay if empty, for a +5 second blessing."],
+      ["SUPPLY POD", "Walk over a supply pod for DNA and one charge. Cleared combat rooms offer a mutation capsule."],
+      ["MUTATIONS", "Stable Genome: +3s host life. Rapid Metabolism: faster idle stamina recovery. Bio Recycler: +5 DNA."],
+      ["GRAFTS & EXTRACTION", "Enforcer grants rear plating; Chimera grants acid stride. Clear the portal guardian to reach the next floor."],
     ];
-    let rowY = introY + 22;
-    const rowH = Math.min(104, (h - (rowY - y) - 12) / 3);
-    for (const [kind, title] of rows) {
-      const spec = HOST_SPECS[kind];
-      const color = KIND_COLOR[kind];
-      drawPanel(ctx, { x, y: rowY, w, h: rowH }, { fill: "rgba(0, 255, 136, 0.022)", stroke: "rgba(255,255,255,0.06)" });
-      ctx.fillStyle = color;
-      ctx.fillRect(x, rowY, 3, rowH);
-
-      ctx.font = FONT(12, 700);
-      fillTextShadow(ctx, spec.name, x + 20, rowY + 24, color);
-      ctx.font = FONT(19, 700);
-      fillTextShadow(ctx, title, x + 20, rowY + 50, "#effff7");
-      ctx.font = FONT(14, 400);
-      drawParagraph(ctx, spec.graftBlurb, x + 20, rowY + 72, w - 40, 20, "rgba(220, 245, 235, 0.7)");
-      rowY += rowH + 8;
-    }
+    const gap = 12, colW = (w - gap) / 2, rowH = Math.min(132, (h - 24) / 3);
+    cards.forEach(([title, body], i) => {
+      const cx = x + (i % 2) * (colW + gap), cy = y + Math.floor(i / 2) * (rowH + 8);
+      drawPanel(ctx, { x: cx, y: cy, w: colW, h: rowH }, { fill: "rgba(0, 255, 136, 0.025)" });
+      ctx.font = FONT(15, 700); fillTextShadow(ctx, title, cx + 12, cy + 23, "#effff7");
+      ctx.font = FONT(12, 400); drawParagraph(ctx, body, cx + 12, cy + 34, colW - 24, 17, "rgba(207, 238, 221, 0.78)");
+    });
   }
 
   private renderLogs(

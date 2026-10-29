@@ -13,35 +13,31 @@ import { clamp, smoothing, type Vec2 } from "./math";
 export class Camera {
   x = ARENA.width / 2;
   y = ARENA.height / 2;
-  zoom = 1;
+  /** Fixed CSS-pixel world scale; HUD rendering is independent of this transform. */
+  zoom = 1.5;
   angle = 0;
   width = 1280;
   height = 720;
   trauma = 0;
-  private viewW = 1560;
-  private viewH = 880;
 
   private shakeX = 0;
   private shakeY = 0;
   private time = 0;
   private focusX = ARENA.width / 2;
   private focusY = ARENA.height / 2;
+  /** Optional camera limit; the tutorial pins this to the active chamber. */
+  private bounds: { x: number; y: number; w: number; h: number } | null = null;
 
   resize(width: number, height: number): void {
     this.width = Math.max(1, width);
     this.height = Math.max(1, height);
-    this.recomputeZoom();
+    this.clampToArena();
   }
 
   /** Tighten the camera for enclosed levels; the sector keeps the wide read. */
-  setViewSize(worldWidth: number, worldHeight: number): void {
-    this.viewW = worldWidth;
-    this.viewH = worldHeight;
-    this.recomputeZoom();
-  }
-
-  private recomputeZoom(): void {
-    this.zoom = clamp(Math.min(this.width / this.viewW, this.height / this.viewH), 0.55, 2.2);
+  setViewSize(_worldWidth: number, _worldHeight: number): void {
+    // The requested fixed zoom is independent of room and viewport dimensions.
+    this.clampToArena();
   }
 
   addTrauma(amount: number): void {
@@ -58,6 +54,26 @@ export class Camera {
     this.clampToArena();
   }
 
+  /**
+   * Place the frame immediately, without clearing shake. The room-locked
+   * tutorial camera hands the view to the next chamber by calling this with a
+   * panned centre every frame, so the hand-off is exact rather than asymptotic.
+   */
+  setCenter(target: Vec2): void {
+    this.focusX = target.x;
+    this.focusY = target.y;
+    this.x = target.x;
+    this.y = target.y;
+    this.clampToArena();
+  }
+
+  /** Confine the view to a rectangle; null restores the whole-arena limit. */
+  setBounds(bounds: { x: number; y: number; w: number; h: number } | null): void {
+    this.bounds = bounds;
+    this.clampToArena();
+  }
+
+  /** `focus` null freezes the follow target (rooms pin the camera themselves). */
   update(dt: number, focus: Vec2 | null): void {
     this.time += dt;
 
@@ -84,8 +100,9 @@ export class Camera {
   private clampToArena(): void {
     const halfW = this.width / (2 * this.zoom);
     const halfH = this.height / (2 * this.zoom);
-    this.x = halfW * 2 >= ARENA.width ? ARENA.width / 2 : clamp(this.x, halfW, ARENA.width - halfW);
-    this.y = halfH * 2 >= ARENA.height ? ARENA.height / 2 : clamp(this.y, halfH, ARENA.height - halfH);
+    const b = this.bounds ?? { x: 0, y: 0, w: ARENA.width, h: ARENA.height };
+    this.x = halfW * 2 >= b.w ? b.x + b.w / 2 : clamp(this.x, b.x + halfW, b.x + b.w - halfW);
+    this.y = halfH * 2 >= b.h ? b.y + b.h / 2 : clamp(this.y, b.y + halfH, b.y + b.h - halfH);
   }
 
   applyTransform(ctx: CanvasRenderingContext2D): void {

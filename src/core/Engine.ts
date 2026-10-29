@@ -60,7 +60,7 @@ export class Engine {
     this.resize();
     this.world = new World(this.input, this.camera, this.decals, this.sfx);
     this.menu = new MainMenu();
-    this.codex = new CodexUI(this.sfx, () => this.world.lore);
+    this.codex = new CodexUI(this.sfx, () => this.world.lore, this.assets);
 
     window.addEventListener("resize", this.onResize);
     window.addEventListener("pointerdown", this.unlockAudio);
@@ -150,6 +150,15 @@ export class Engine {
       }
 
       case GameState.PLAYING: {
+        if (this.world.dungeon?.draft || this.world.tutorial?.draft) {
+          for (let i = 0; i < 3; i++) {
+            if (this.input.wasPressed(`Digit${i + 1}`)) {
+              this.world.dungeon?.chooseMutation(i);
+              this.world.tutorial?.chooseMutation(i);
+            }
+          }
+          break;
+        }
         if (this.input.wasPressed("Tab") || this.input.wasPressed("Escape")) {
           this.openCodex(GameState.PLAYING, 0);
           break;
@@ -245,7 +254,9 @@ export class Engine {
       this.returnToMenu();
       return;
     }
+    const tutorialMutation = this.world.tutorial?.chosenMutation;
     this.world.applyLevel(next);
+    if (tutorialMutation !== null && tutorialMutation !== undefined) this.world.dungeon?.grantMutation(tutorialMutation);
     this.beginPlaying();
   }
 

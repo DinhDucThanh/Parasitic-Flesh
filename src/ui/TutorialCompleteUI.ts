@@ -104,12 +104,12 @@ export class TutorialCompleteUI {
     fillTextShadow(ctx, "PROVING GROUND // CLEAR", width / 2, height * 0.2, "rgba(0, 255, 136, 0.7)");
 
     ctx.font = FONT(Math.round(Math.min(58, width * 0.048)), 700);
-    fillTextShadow(ctx, "QUALIFICATION COMPLETE", width / 2, height * 0.3, "#eafff3", 2);
+    fillTextShadow(ctx, "TUTORIAL COMPLETE", width / 2, height * 0.3, "#eafff3", 2);
 
     ctx.font = FONT(15, 500);
     fillTextShadow(
       ctx,
-      "SEVEN CHAMBERS SURVIVED // PROCEED TO SECTOR 1",
+      "FIVE CHAMBERS SURVIVED // PROCEED TO SECTOR 1",
       width / 2,
       height * 0.3 + 34,
       "rgba(190, 235, 214, 0.7)",
@@ -124,12 +124,12 @@ export class TutorialCompleteUI {
       "rgba(175, 215, 198, 0.45)",
     );
 
-    drawButton(ctx, layout.proceed, "ENTER SECTOR 1", {
+    drawButton(ctx, layout.proceed, "DEPLOY TO SECTOR 1", {
       hover: this.hover.hovered === "proceed",
       center: true,
       accent: UI.green,
     });
-    drawButton(ctx, layout.menu, "MAIN MENU", {
+    drawButton(ctx, layout.menu, "RETURN TO MAIN MENU", {
       hover: this.hover.hovered === "menu",
       center: true,
     });

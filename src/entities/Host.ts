@@ -1,4 +1,4 @@
-import { clampToArena } from "../core/arena";
+import { clampToArena, type Bounds } from "../core/arena";
 import { DECAY, POSSESSION } from "../core/config";
 import { approachAngle, clamp, smoothing, type Vec2 } from "../core/math";
 import { Entity } from "./Entity";
@@ -8,19 +8,25 @@ export type WeaponKind = "rifle" | "shotgun" | "claw";
 /** Chimera lunge state machine, readable by AI, input and renderer. */
 export type LungePhase = "stalk" | "windup" | "dash" | "recover";
 /** Signature traits harvested by the spore when it leaves a host. */
-export type GraftKind = "sidearm" | "dorsalShield" | "acidStride";
+export type GraftKind = "dorsalShield" | "acidStride";
 
 /** Leaving body A grafts A's signature trait onto the next body you enter. */
-export const GRAFT_BY_KIND: Record<HostKind, GraftKind> = {
-  security: "sidearm",
+export const GRAFT_BY_KIND: Record<HostKind, GraftKind | null> = {
+  security: null,
   enforcer: "dorsalShield",
   mutant: "acidStride",
 };
 
 export const GRAFT_LABEL: Record<GraftKind, string> = {
-  sidearm: "SHOULDER SIDEARM",
   dorsalShield: "DORSAL PLATING",
   acidStride: "ACID STRIDE",
+};
+
+/** Cell rows holding the articulated head and the aim-rotated weapon in a rig. */
+export const HOST_RIG_ROWS: Record<HostKind, { head: number; weapon: number }> = {
+  security: { head: 6, weapon: 7 },
+  enforcer: { head: 6, weapon: 7 },
+  mutant: { head: 7, weapon: 8 },
 };
 
 export interface WeaponSpec {
@@ -62,7 +68,7 @@ export const HOST_SPECS: Record<HostKind, HostSpec> = {
     classTag: "RANGE / RAPID",
     weaponBlurb: "Assault rifle. Accurate mid-range kinetic fire.",
     trait: "Fragile Flesh | Fast Aim",
-    graftBlurb: "A shoulder sidearm that hunts on its own.",
+    graftBlurb: "No inherited graft.",
     radius: 17,
     speed: 190,
     lifespan: 20,
@@ -85,7 +91,7 @@ export const HOST_SPECS: Record<HostKind, HostSpec> = {
     kind: "enforcer",
     name: "HEAVY ENFORCER",
     classTag: "BRUISER / SHIELD",
-    weaponBlurb: "Pump shotgun. Five-pellet burst at close range.",
+    weaponBlurb: "Five-pellet shotgun. Frontal shield blocks shots and spore leaps.",
     trait: "Frontal Guard | Heavy Plate",
     graftBlurb: "Dorsal plating turns its back into a wall.",
     radius: 22,
@@ -110,7 +116,7 @@ export const HOST_SPECS: Record<HostKind, HostSpec> = {
     kind: "mutant",
     name: "MUTANT CHIMERA",
     classTag: "AMBUSH / LUNGE",
-    weaponBlurb: "Lunging claws. A telegraphed burst, then a long recovery.",
+    weaponBlurb: "No walking: linear claw-lunges, then recovery.",
     trait: "Bestial Speed | Frenzy",
     graftBlurb: "Acid stride leaves caustic footprints.",
     radius: 18,
@@ -155,11 +161,19 @@ export class Host extends Entity {
   readonly spec: HostSpec;
 
   facing = -Math.PI / 2;
+  /** Smoothed presentation angle, separate from authoritative weapon aim. */
+  renderAim = -Math.PI / 2;
+  /** Smoothed heading of the lower body; drives the 4-way walk rows. */
+  moveAngle = -Math.PI / 2;
+  /** Quantized 4-way body track, read by the renderer. */
+  walkDir: "down" | "up" | "side" = "up";
+  private lastPosition: Vec2 = { x: 0, y: 0 };
   hp: number;
   armor: number;
   /** Seconds of lifespan remaining. Only meaningful while possessed. */
   decay: number;
   possessed = false;
+  deathHandled = false;
   /** Seconds this body has been possessed; gates the switch lockout. */
   possessedTime = 0;
   /** True while Shift sprint is held in a possessed body. */
@@ -179,7 +193,7 @@ export class Host extends Entity {
   slideSpeed = 0;
   slideDir: Vec2 = { x: 1, y: 0 };
   /** Ghost afterimages left behind by a sprint, fading over 0.25s. */
-  afterimages: { x: number; y: number; facing: number; walkPhase: number; life: number }[] = [];
+  afterimages: { x: number; y: number; facing: number; walkPhase: number; walkDir: "down" | "up" | "side"; life: number }[] = [];
   private afterimageClock = 0;
   /** I-frames: while > 0, hits inside the window cost no lifespan. */
   damageGrace = 0;
@@ -210,6 +224,8 @@ export class Host extends Entity {
   windupDir: Vec2 = { x: 1, y: 0 };
 
   // Presentation state (written by gameplay, read by the renderer).
+  /** One-sprite-pixel breath dip applied to the head and weapon while idling. */
+  idleDip = 0;
   walkPhase = Math.random() * Math.PI * 2;
   recoil = 0;
   muzzle = 0;
@@ -220,6 +236,10 @@ export class Host extends Entity {
   corruption = 0;
   aimLaser = 0;
   moving = 0;
+  animation = "idle";
+  animationTime = 0;
+  /** A silent body switch leaves a short-lived collapsing sprite. */
+  dropTime = -1;
 
   readonly ai: AIState = {
     decide: 0,
@@ -240,6 +260,25 @@ export class Host extends Entity {
     this.hp = spec.hp;
     this.armor = spec.armor;
     this.decay = spec.lifespan;
+    this.lastPosition = { x, y };
+  }
+
+  /** Walk row for the current body heading. */
+  get walkAnimation(): "walk_down" | "walk_up" | "walk_side" {
+    return this.walkDir === "down" ? "walk_down" : this.walkDir === "up" ? "walk_up" : "walk_side";
+  }
+
+  /** Side rows mirror on leftward travel; front/back rows never flip. */
+  get bodyFlip(): boolean {
+    return Math.cos(this.kind === "mutant" ? this.renderAim : this.moveAngle) < 0;
+  }
+
+  /** Four-way track for a heading; +y is screen-down. */
+  private directionOf(angle: number): "down" | "up" | "side" {
+    const sy = Math.sin(angle);
+    if (sy > Math.SQRT1_2) return "down";
+    if (sy < -Math.SQRT1_2) return "up";
+    return "side";
   }
 
   get weapon(): WeaponSpec {
@@ -329,24 +368,24 @@ export class Host extends Entity {
     this.armor = 0;
   }
 
-  /** Move along a direction, normalized and clamped to the arena. */
-  move(dir: Vec2, dt: number, speed: number): void {
+  /** Move along a direction, normalized and clamped to the level bounds. */
+  move(dir: Vec2, dt: number, speed: number, bounds?: Bounds): void {
     const len = Math.hypot(dir.x, dir.y);
     if (len > 1e-4) {
       this.position.x += (dir.x / len) * speed * dt;
       this.position.y += (dir.y / len) * speed * dt;
-      clampToArena(this.position, this.radius);
+      clampToArena(this.position, this.radius, bounds);
       this.moving = 1;
     }
   }
 
   /** Possessed movement with slide: releasing a sprint carries momentum instead of stopping dead. */
-  glide(dir: Vec2, dt: number, speed: number): void {
+  glide(dir: Vec2, dt: number, speed: number, bounds?: Bounds): void {
     const len = Math.hypot(dir.x, dir.y);
     if (len > 1e-4) {
       this.slideDir = { x: dir.x / len, y: dir.y / len };
       this.slideSpeed = this.sprinting ? speed : 0;
-      this.move(dir, dt, speed);
+      this.move(dir, dt, speed, bounds);
       return;
     }
     if (this.slideSpeed < 1) {
@@ -357,7 +396,8 @@ export class Host extends Entity {
     this.slideSpeed *= Math.pow(0.08, dt / POSSESSION.slideTime);
     this.position.x += this.slideDir.x * this.slideSpeed * dt;
     this.position.y += this.slideDir.y * this.slideSpeed * dt;
-    clampToArena(this.position, this.radius);
+    this.moving = 1;
+    clampToArena(this.position, this.radius, bounds);
   }
 
   /**
@@ -399,6 +439,7 @@ export class Host extends Entity {
         y: this.position.y,
         facing: this.facing,
         walkPhase: this.walkPhase,
+        walkDir: this.walkDir,
         life: 0.25,
       });
     }
@@ -410,6 +451,29 @@ export class Host extends Entity {
 
   /** Decay the visual timers; called once per frame for every living host. */
   updateVisual(dt: number): void {
+    this.renderAim = approachAngle(this.renderAim, this.facing, dt * 14);
+    // Travel heading comes from actual displacement, so the lower body always
+    // steps in the direction it moves instead of moonwalking behind the aim.
+    const dx = this.position.x - this.lastPosition.x;
+    const dy = this.position.y - this.lastPosition.y;
+    this.lastPosition.x = this.position.x;
+    this.lastPosition.y = this.position.y;
+    const travel = dx * dx + dy * dy;
+    if (travel > 0.0025 && travel < 1600) {
+      const target = Math.atan2(dy, dx);
+      const diff = Math.atan2(Math.sin(target - this.moveAngle), Math.cos(target - this.moveAngle));
+      this.moveAngle += diff * Math.min(1, dt * 14);
+    }
+    // The rooted chimera reads its body direction from its facing instead.
+    this.walkDir = this.directionOf(this.kind === "mutant" ? this.renderAim : this.moveAngle);
+    const next = this.kind === "mutant"
+      ? this.lungePhase === "windup" ? "telegraph" : this.isDashing || this.lungePhase === "dash" ? "lunge" : this.lungePhase === "recover" ? "stun" : this.walkAnimation
+      : this.muzzle > 0 ? "fire" : this.moving > 0.1 ? this.walkAnimation : "idle";
+    if (next !== this.animation) { this.animation = next; this.animationTime = 0; }
+    else this.animationTime += dt;
+    // Exhale frames lower the torso art; the head and weapon follow by one pixel.
+    const idleFrame = Math.floor(this.animationTime * 5) % 4;
+    this.idleDip = this.kind !== "mutant" && this.animation === "idle" && (idleFrame === 1 || idleFrame === 2) ? 1 : 0;
     this.walkPhase += dt * (5 + this.moving * 9);
     this.recoil = Math.max(0, this.recoil - dt * 9);
     this.muzzle = Math.max(0, this.muzzle - dt * 14);

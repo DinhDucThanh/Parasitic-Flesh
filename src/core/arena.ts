@@ -9,11 +9,17 @@ export interface Rect {
   h: number;
 }
 
-/** Keep a circle of `radius` inside the playable floor. */
-export function clampToArena(p: Vec2, radius: number): void {
+/** Playable extent of a level. Wall thickness is shared by every level. */
+export interface Bounds {
+  width: number;
+  height: number;
+}
+
+/** Keep a circle of `radius` inside the playable floor of `bounds`. */
+export function clampToArena(p: Vec2, radius: number, bounds: Bounds = ARENA): void {
   const min = ARENA.wall + radius;
-  p.x = clamp(p.x, min, ARENA.width - min);
-  p.y = clamp(p.y, min, ARENA.height - min);
+  p.x = clamp(p.x, min, bounds.width - min);
+  p.y = clamp(p.y, min, bounds.height - min);
 }
 
 /**
