@@ -6,11 +6,14 @@
   "description": "Top-down body-horror action roguelite prototype. Procedural visuals and audio, zero asset dependencies.",
   "scripts": {
     "dev": "vite",
+    "generate:assets": "node scripts/generate-sprites.js",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "check:map": "tsx scripts/check-reachability.ts",
     "preview": "vite preview"
   },
   "devDependencies": {
+    "tsx": "^4.23.15",
     "typescript": "^5.6.0",
     "vite": "^6.0.0"
   },

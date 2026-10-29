@@ -26,5 +26,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Map reachability
+        run: npm run check:map
+
       - name: Build
         run: npm run build
